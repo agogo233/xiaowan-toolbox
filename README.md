@@ -3,16 +3,22 @@
 Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS / Windows 共用一套代码**。
 基于 **PySide6 (Qt 6) + FFmpeg**，原生桌面风格，支持浅色 / 深色主题。
 
+> 本项目 fork 自 [52ting/xiaowan-toolbox](https://github.com/52ting/xiaowan-toolbox)
+> （原版小丸工具箱跨平台重制版 1.2.4），在此基础上重构并继续开发至 2.0.0：
+> 按文件大小页重做、试压、后台运行、用途一键配置、AV1 硬件编码、
+> Web 端兼容性体系，以及 macOS 离线打包方案。
+> 感谢原作者的奠基工作。
+
 ![压缩页](_shots/1_压缩.png)
 
 ## 下载安装
 
 | 平台 | 怎么装 |
 | --- | --- |
-| **Windows** | 下载 [`XiaoWanToolbox-2.0.0.exe`](https://github.com/52ting/xiaowan-toolbox/releases/latest)（约 208 MB，单文件免安装）双击即用。自带 ffmpeg，装完直接能用 |
+| **Windows** | 下载 [`XiaoWanToolbox-2.0.0.exe`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest)（约 208 MB，单文件免安装）双击即用。自带 ffmpeg，装完直接能用 |
 | **macOS** | 官方不提供现成 `.app`，需要在本机跑一次构建（约 2–5 分钟），见下方 [macOS 章节](#macos)。产出的 `.app` 自带 ffmpeg，可随意拷给别人 |
 
-全部版本与下载：<https://github.com/52ting/xiaowan-toolbox/releases>
+全部版本与下载：<https://github.com/axutongxue/xiaowan-toolbox/releases>
 
 > 🔴 **发布包必须用英文名**（如 `XiaoWanToolbox-2.0.0.exe`）：GitHub Release 会剥掉
 > 资产名里的非 ASCII 字符，中文名 `小丸工具箱-2.0.0.exe` 会被削成 `-2.0.0-.exe`。
@@ -96,15 +102,26 @@ ISCC.exe packaging\xiaowan_setup.iss
 
 ## macOS
 
-macOS 上没有现成的 `.app` 可以直接下载，需要**在本机跑一次构建**（约 2–5 分钟）。
-构建产物 `小丸工具箱.app` 自带 ffmpeg，之后可以随意拷贝到别的 Mac 上用。
+macOS 上不提供现成的 `.app`（未做 Apple 公证，跨机分发体验不好），需要**在本机跑一次构建**。
+构建产物 `小丸工具箱.app` 自带 ffmpeg，之后可以随意拷到别的 Mac 上。
 
-### 0. 前置条件（只做一次）
+### 方式一：离线打包 zip（推荐）
 
-> 🔴 **推荐路径**：本仓库的 Releases 里有「小丸工具箱-mac打包.zip」——
-> 里面已预置 mac 版 ffmpeg 和全部 Python 依赖（两个架构各一份），
-> 解压后**双击「打包小丸工具箱.command」即可出 .app，全程不用联网**。
-> 下面的源码构建流程保留给想自己折腾的场景。
+从 [Releases](https://github.com/axutongxue/xiaowan-toolbox/releases) 下载
+**`XiaoWanToolbox-2.0.0-mac.zip`**，解压后在**终端**里：
+
+```bash
+cd ~/Downloads/xiaowan-toolbox    # 换成你实际解压的位置
+bash 打包小丸工具箱.command
+```
+
+全程不用联网 —— 包里已预置 mac 版 ffmpeg/ffprobe（arm64 + x86_64 各一份）
+和全部 Python 依赖 wheel。约 3~8 分钟后得到 `dist/小丸工具箱.app` 和 `dist/小丸工具箱.zip`。
+唯一前提是本机有 Python 3.10+（macOS 12.3+ 自带 `python3` 通常够用）。
+
+### 方式二：源码构建（会自己装 Homebrew 的 ffmpeg）
+
+#### 0. 前置条件（只做一次）
 
 ```bash
 # 命令行工具（提供 python3 / git 等，若已装过会提示 already installed）
@@ -120,15 +137,14 @@ brew install ffmpeg
 > Intel 芯片路径是 `/usr/local/bin`，Apple Silicon（M 系列）是 `/opt/homebrew/bin`，
 > 程序两者都会自动找，不用手动配 PATH。
 
-### 1. 解压源码包
-
-双击 `小丸工具箱-mac打包.zip` 解压（得到 `xiaowan-toolbox/` 文件夹），然后在**终端**里进入这个目录：
+#### 1. 拿到源码
 
 ```bash
-cd ~/Downloads/xiaowan-toolbox    # 换成你实际解压的位置
+git clone https://github.com/axutongxue/xiaowan-toolbox.git
+cd xiaowan-toolbox
 ```
 
-### 2. 方式一：直接跑源码（最快，适合先试一下）
+#### 2. 直接跑源码（最快，适合先试一下）
 
 ```bash
 python3 -m venv .venv
@@ -144,7 +160,7 @@ echo ".venv/bin/python run.py" > 启动.command && chmod +x 启动.command
 ```
 以后双击目录里的 `启动.command` 就能开。
 
-### 3. 方式二：打成独立 .app（推荐，可拷贝分享）
+#### 3. 打成独立 .app（可拷贝分享）
 
 ```bash
 bash packaging/build_macos.sh          # 生成 dist/小丸工具箱.app
@@ -166,7 +182,7 @@ bash packaging/build_macos.sh --dmg    # 顺便生成 dist/小丸工具箱.dmg
 | 卡在 `pip install` | 网络问题，可换源：`export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` |
 | `sips` / `iconutil` 报错 | 这两个是 macOS 自带工具，报错一般是上一步的 `icon.png` 没生成，重跑一次即可（图标本来也不是必需） |
 
-### 4. 首次打开被 Gatekeeper 拦下怎么办
+#### 4. 首次打开被 Gatekeeper 拦下怎么办
 
 因为没做苹果开发者公证，第一次双击（尤其是从别的 Mac 拷过来的）可能出现
 「无法打开，因为 Apple 无法检查其是否包含恶意软件」。任选一种放行：
@@ -181,14 +197,14 @@ xattr -cr "/Applications/小丸工具箱.app"     # 推荐：清掉隔离标记
 > 如果 .app 是从压缩包/网络传过来的，`xattr -cr` 基本上是必做的一步；
 > 偶尔还会遇到「已损坏」提示，同一条命令也能解决。
 
-### 5. 卸载
+#### 5. 卸载
 
 - 源码运行：删掉解压出来的 `xiaowan-toolbox` 整个文件夹即可。
 - .app：把「应用程序」里的 `小丸工具箱.app` 拖进废纸篓。
 - 配置残留（输出目录、主题、上次的预设）在 `~/Library/Application Support/XiaoWanToolbox/`，
   想彻底清干净就一并删掉。
 
-### 6. 用起来和 Windows 版一样吗
+#### 6. 用起来和 Windows 版一样吗
 
 一样，只是两点平台差异：
 
@@ -292,11 +308,17 @@ xiaowan-toolbox/
 ## 测试
 
 ```bash
-python tests/smoke_test.py        # 不开窗口，36 项断言
-python tests/downmix_test.py      # 声道下混静态验证，98 项断言
-python tests/downmix_e2e_test.py  # 声道下混真跑 ffmpeg，53 项断言
+python tests/smoke_test.py         # 不开窗口，36 项断言
+python tests/size_test.py          # 按文件大小：真跑 ffmpeg 验证目标体积，108 项
+python tests/size_tab_test.py      # 按文件大小页界面层，270 项
+python tests/downmix_test.py       # 声道下混静态验证，98 项断言
+python tests/downmix_e2e_test.py   # 声道下混真跑 ffmpeg，53 项断言
 python tests/merge_ui_test.py 输出目录  # 多轨合并界面，45 项断言（顺带截图）
-python tests/engine_test.py       # 队列引擎，11 项断言
+python tests/engine_test.py        # 队列引擎，28 项断言
+python tests/encoder_speed_test.py # 编码器可用性与速度档，101 项断言
+python tests/preset_chip_test.py   # 预设卡片文字排布，30 项断言
+python tests/combo_test.py         # 窗口内下拉面板，27 项断言
+python tests/disabled_look_test.py # 禁用态可辨识度，16 项断言
 python tests/screenshot.py 输出目录      # 逐页截图
 python tests/verify_exe.py     # 启动打包好的 exe 并截图验证
 ```
