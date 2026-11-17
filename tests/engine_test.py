@@ -114,7 +114,10 @@ def main() -> int:
 
     # ---------------- 场景 3：取消 ---------------- #
     print("\n[3] 运行中取消")
-    slow = VideoSettingsLike = PRESETS_BY_KEY["tiny"].video  # x265 veryslow，足够慢
+    # 直接构造慢速设置，不借用预设（预设的编码器可能变化）
+    from app.core.presets import VideoSettings as _VS
+    slow = _VS(codec="libx265", crf=28, preset="veryslow", audio_codec="aac",
+               audio_bitrate_kbps=96)
     big = work / "big.mp4"
     make_sample(env, big, 60)
     cancel_task = build_compress_task(type("C", (), {"env": env, "config": cfg})(),
@@ -135,6 +138,49 @@ def main() -> int:
     check("半成品文件已清理", not cancel_task.dst.exists(),
           cancel_task.dst.name)
 
+    # ---------------- 场景 3b：临时件清理（.best 不许残留） ---------------- #
+    print("\n[3b] 取消 / 预检失败都不许留 .best 副本")
+    from app.core.engine import _best_path
+    from app.core.size_service import build_size_task
+    from app.core.presets import Container, VideoSettings
+
+    ctx_like = type("C", (), {"env": env, "config": cfg})()
+    # 取消路径：手动放一个 .best，模拟修正阶段留下的副本
+    tc = build_size_task(ctx_like, big, None,
+                         VideoSettings(codec="libx264", preset="veryslow",
+                                       container=Container.MKV),
+                         1.0, audio_mode="none", policy="strict")
+    tc.info = probe(env, big)
+    best_c = _best_path(tc.dst)
+    best_c.parent.mkdir(parents=True, exist_ok=True)
+    best_c.write_bytes(b"fake")
+    mgr.add_many([tc])
+    for _ in range(10):
+        app.processEvents()
+        time.sleep(0.02)
+    mgr.cancel(tc.id)
+    deadline = time.time() + 30
+    while time.time() < deadline and not tc.is_finished:
+        app.processEvents()
+        time.sleep(0.02)
+    check("取消后 .best 已清理", not best_c.exists(), str(best_c))
+
+    # 预检失败路径：不可行时是 return 早退，不走 except 分支
+    tf = build_size_task(ctx_like, big, None,
+                         VideoSettings(codec="libx264", preset="ultrafast",
+                                       container=Container.MKV),
+                         0.0001, audio_mode="none", policy="strict")
+    tf.info = probe(env, big)
+    best_f = _best_path(tf.dst)
+    best_f.parent.mkdir(parents=True, exist_ok=True)
+    best_f.write_bytes(b"fake")
+    mgr.add_many([tf])
+    deadline = time.time() + 60
+    while time.time() < deadline and not tf.is_finished:
+        app.processEvents()
+        time.sleep(0.02)
+    check("预检失败后 .best 已清理", not best_f.exists(), str(best_f))
+
     # ---------------- 场景 4：并发限制 ---------------- #
     print("\n[4] 并发数限制")
     cfg.concurrency = 1
@@ -153,6 +199,138 @@ def main() -> int:
           f"running={mgr.running_count()} waiting={mgr.waiting_count()}")
     mgr.clear_all()
     run_queue(mgr, 10)
+
+    # ---------------- 场景 5：原子输出 ---------------- #
+    print("\n[5] 原子输出：目标路径要么不存在、要么完整")
+    from app.core.engine import _part_path, _best_path
+    from app.core.presets import Container, VideoSettings
+
+    ctx_like = type("C", (), {"env": env, "config": cfg})()
+    st5 = VideoSettings(codec="libx264", preset="ultrafast",
+                        container=Container.MKV)
+    t5 = build_size_task(ctx_like, big, probe(env, big), st5, 2.0,
+                         audio_mode="none", policy="strict")
+    part5 = _part_path(t5.dst)
+    mgr.add_many([t5])
+    run_queue(mgr, 300)
+    check("任务完成", t5.status == TaskStatus.DONE, t5.error or "")
+    check("产物在正式路径上", t5.dst.exists())
+    check("中间产物 .part 已改名，不残留", not part5.exists(), str(part5))
+    check("产物不是空文件", t5.dst.exists() and t5.dst.stat().st_size > 1024,
+          f"{t5.dst.stat().st_size if t5.dst.exists() else 0} 字节")
+
+    # 同名文件在编码期间不许被破坏：用一个已知内容的文件占住目标路径
+    t6 = build_size_task(ctx_like, big, probe(env, big), st5, 2.0,
+                         audio_mode="none", policy="strict")
+    original = b"ORIGINAL-CONTENT-MUST-SURVIVE"
+    t6.dst.write_bytes(original)
+    mgr.add_many([t6])
+    saw_intact = False
+    deadline = time.time() + 300
+    while time.time() < deadline and not t6.is_finished:
+        app.processEvents()
+        time.sleep(0.02)
+        if t6.dst.exists() and t6.dst.stat().st_size == len(original):
+            saw_intact = True
+    check("编码期间原同名文件保持完好", saw_intact)
+    check("完成后才被原子替换成视频",
+          t6.status == TaskStatus.DONE and t6.dst.stat().st_size > 1024,
+          f"{t6.dst.stat().st_size if t6.dst.exists() else 0} 字节")
+
+    # ---------------- 场景 6：日志不许重复，失败信息要立刻可读 ---------------- #
+    print("\n[6] 日志：命令不重复、失败信息不用等信号")
+    cmds = [str(l) for l in t5.log if str(l).startswith("$")]
+    check("每条命令只出现一次", len(cmds) == len(set(cmds)),
+          f"{len(cmds)} 条 / {len(set(cmds))} 条唯一")
+    check("两遍编码 → 恰好 2 条命令", len(cmds) == 2, f"{len(cmds)} 条")
+
+    # 失败时 task.error 必须立刻是人话（不能只给"详情见日志"）
+    t7 = build_size_task(ctx_like, big, probe(env, big), st5, 2.0,
+                         audio_mode="none", policy="strict")
+    t7.steps[-1].args = [("bogus_encoder_xyz" if a == "libx264" else a)
+                         for a in t7.steps[-1].args]
+    mgr.add_many([t7])
+    run_queue(mgr, 120)
+    check("失败任务的状态是 FAILED", t7.status == TaskStatus.FAILED,
+          t7.status.value)
+    # 不额外 pump：验证日志在任务结束那一刻就已经完整
+    err_text = (t7.error or "") + "\n" + "\n".join(str(l) for l in t7.log)
+    check("错误信息不是笼统的「详情见日志」",
+          "详情见日志" not in (t7.error or ""), (t7.error or "")[:50])
+    check("日志里能看到编码器找不到", "ncoder" in err_text or "ncoding" in err_text,
+          err_text[-90:].replace("\n", " | "))
+
+    print("\n[8] 后台运行：降进程优先级，而不是减线程")
+    from app.core.commands import _threads_for_one_job
+    from app.core.engine import (_background_preexec, _set_background_priority)
+
+    # 平台契约：Windows 用进程句柄改，POSIX 用 preexec —— 两者不能混
+    if sys.platform.startswith("win"):
+        check("Windows 上 preexec 返回 None（不该用 fork 钩子）",
+              _background_preexec() is None)
+    else:
+        check("POSIX 上 preexec 是可调用对象",
+              callable(_background_preexec()))
+
+    # 🔴 核心：降优先级**不能**顺手减线程 —— 两者是不同的手段。
+    # 减线程直接牺牲吞吐（实测慢 8~23%）；降优先级只在别人抢 CPU 时让路，
+    # 空闲时全速（实测 0.76s vs 0.76s，完全一样）。
+    # 所以线程数现在恒为 None（交给 ffmpeg），与 background_mode 无关。
+    check("线程数不随并发设置变化（已交给 ffmpeg 自动）",
+          all(_threads_for_one_job(c) is None for c in (1, 2, 4, 8)),
+          str([_threads_for_one_job(c) for c in (1, 2, 4, 8)]))
+
+    # 后台运行开关不碰任务参数 —— 它只改进程优先级
+    _cfg = AppConfig()
+    check("后台运行默认关闭（全速是默认预期）",
+          _cfg.background_mode is False)
+
+    # 真跑一次，确认进程优先级真的被改了。
+    # ⚠️ psutil 不是项目依赖（只为这件事装一个库不值），所以拿不到就跳过
+    # 这一项 —— 但它只是"验证手段"，被测的 _set_background_priority 本身
+    # 只依赖标准库。
+    try:
+        import psutil
+        HAS_PSUTIL = True
+    except ImportError:
+        HAS_PSUTIL = False
+
+    if HAS_PSUTIL:
+        env = FFmpegEnv()
+        env.refresh()
+        # 素材要够长：进程若在采样前就退出，psutil 会抛 NoSuchProcess
+        probe_cmd = [env.ffmpeg or "ffmpeg", "-hide_banner", "-loglevel", "error",
+                     "-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=30",
+                     "-c:v", "libx264", "-preset", "veryslow", "-crf", "18",
+                     "-f", "null", "-"]
+        proc = subprocess.Popen(probe_cmd, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        ok = False
+        try:
+            time.sleep(1.2)
+            before = psutil.Process(proc.pid).nice()
+            _set_background_priority(proc)
+            time.sleep(0.5)
+            after = psutil.Process(proc.pid).nice()
+            ok = True
+        except Exception as exc:  # noqa: BLE001
+            print(f"      跳过优先级实测（进程提前退出：{exc}）")
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if ok:
+            if sys.platform.startswith("win"):
+                check("后台运行把优先级降到 BELOW_NORMAL",
+                      after == psutil.BELOW_NORMAL_PRIORITY_CLASS,
+                      f"{before} -> {after}")
+            else:
+                check("后台运行把 nice 调高（降优先级）", after > before,
+                      f"{before} -> {after}")
+    else:
+        print("      跳过优先级实测（未安装 psutil；实现本身只用标准库）")
 
     print("\n" + "=" * 56)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

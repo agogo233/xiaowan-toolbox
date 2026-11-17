@@ -92,6 +92,66 @@ def _candidates(name: str, user_path: str | None = None) -> list[Path]:
     return out
 
 
+
+def _probe_failure_reason(stderr: str) -> str:
+    """从试编 stderr 里提取用户能看懂的失败原因。
+
+    已知案例：NVENC 驱动过旧时 stderr 里有
+    「The minimum required Nvidia driver for nvenc is 610.00 or newer」。
+    """
+    # 第一优先：编码器自己说的「不支持 X」。这类句子是唯一真正解释起因的，
+    # 且都在 stderr **最前面**；后面那些 "Error while opening encoder" /
+    # "Nothing was written into output file" 只是善后噪音（实测 h264_amf
+    # 编 10bit：起因在第 1 行，最后一行完全没有信息量）
+    for line in stderr.splitlines():
+        low = line.lower()
+        if "not supported" in low or "unsupported" in low:
+            return _humanize_probe_line(line)
+    for line in stderr.splitlines():
+        low = line.lower()
+        if "minimum required" in low and "driver" in low:
+            # NVENC 驱动版本要求：给出人话
+            num = ""
+            for token in line.split():
+                if token.replace(".", "").isdigit():
+                    num = token
+                    break
+            return (f"NVIDIA 驱动过旧（需要 {num} 或更新），"
+                    "升级显卡驱动后即可用")
+        if "driver does not support" in low:
+            return "NVIDIA 驱动版本与该 ffmpeg 的 NVENC 要求不匹配，升级显卡驱动后即可用"
+        if "failed with error" in low and "amf" in low:
+            return "AMD AMF 初始化失败（驱动或显卡不支持该编码）"
+        if "init" in low and "failed" in low:
+            return _humanize_probe_line(line)
+    # 没命中已知案例时也别返回空：取第一条非空输出（起因总在前面，
+    # 末尾那几行"没写出任何包"对用户毫无意义）
+    for line in stderr.splitlines():
+        if line.strip():
+            return _humanize_probe_line(line)
+    return ""
+
+
+def _humanize_probe_line(line: str) -> str:
+    """把 ffmpeg 的 `[模块 @ 0x...] 正文` 剥成正文，并去掉对象地址噪音。"""
+    text = line.strip()
+    if text.startswith("[") and "]" in text:
+        text = text.split("]", 1)[1].strip()
+    return text[:120]
+
+
+#: 试编 stderr 里算"真失败"的关键词。不能用「stderr 非空」来判断：
+#: SVT-AV1 成功时也会往 stderr 打一大段 Svt[info] 横幅（实测），
+#: 那样会把好编码器误判成不可用（libsvtav1 就是这么被漏判的）。
+_FAIL_MARKERS = ("error", "failed", "invalid", "unable", "no capable",
+                 "not support", "unsupported", "cannot")
+
+
+def _looks_failed(stderr: str) -> bool:
+    low = stderr.lower()
+    return any(m in low for m in _FAIL_MARKERS)
+
+
 def find_binary(name: str, user_path: str | None = None) -> str | None:
     """返回可用的可执行文件路径，找不到返回 None。"""
     seen: set[str] = set()
@@ -118,6 +178,7 @@ class FFmpegEnv:
     user_ffmpeg: str = ""
     _encoders: list[str] = field(default_factory=list, repr=False)
     _usable: dict[str, bool] = field(default_factory=dict, repr=False)
+    _unusable_reason: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property
     def ready(self) -> bool:
@@ -183,6 +244,36 @@ class FFmpegEnv:
         """ffmpeg 是否编译了该编码器。"""
         return bool(self.ffmpeg) and encoder in self.encoder_list()
 
+    def unusable_reason(self, encoder: str) -> str:
+        """硬件编码器不可用的人话原因（探测时从 stderr 提取）。
+
+        编码器实际可用或尚未探测时返回空串。
+        """
+        return self._unusable_reason.get(encoder, "")
+
+    def usable_reason(self, encoder: str,
+                      extra: list[str] | None = None) -> str:
+        """带附加参数那次试编的失败原因（如 10 位色深探测）。"""
+        key = encoder if not extra else f"{encoder}|{' '.join(extra)}"
+        return self._unusable_reason.get(key, "")
+
+    #: 10 位色深探测用的附加参数
+    TEN_BIT_ARGS = ["-pix_fmt", "yuv420p10le"]
+
+    def encoder_usable_10bit(self, encoder: str) -> bool:
+        """该编码器能不能真的编 10 位色深（yuv420p10le）。
+
+        **必须试编，不能看声明**：ffmpeg 报的像素格式列表不可信 ——
+        h264_amf 的 `-h encoder` 里明明白白列着 p010le，实际编码直接失败
+        （实测 2026-11-11）；libx264 有没有 10 位也取决于构建。
+        结果按编码器缓存，和 8 位那次探测互不覆盖。
+        """
+        return self.encoder_usable(encoder, self.TEN_BIT_ARGS)
+
+    def ten_bit_reason(self, encoder: str) -> str:
+        """不支持 10 位色深时的人话原因（支持的返回空串）。"""
+        return self.usable_reason(encoder, self.TEN_BIT_ARGS)
+
     def encoder_usable(self, encoder: str, extra: list[str] | None = None) -> bool:
         """真机试编 1 帧，确认硬件编码器真的能用。
 
@@ -195,20 +286,33 @@ class FFmpegEnv:
         if key in self._usable:
             return self._usable[key]
         ok = False
+        reason = ""
         if self.encoder_available(encoder):
             try:
                 res = subprocess.run(
                     [self.ffmpeg or "ffmpeg", "-hide_banner", "-loglevel", "error",
-                     "-nostdin", "-f", "lavfi", "-i", "color=c=black:s=192x108:r=25",
+                     # 256x144：AMF 硬件编码器有最小分辨率限制（实测 192x108 会
+                     # Init 失败 error 5，256x144 起正常），探测统一用这个尺寸
+                     "-nostdin", "-f", "lavfi", "-i", "testsrc2=s=256x144:r=25",
                      "-frames:v", "3", "-an", "-c:v", encoder, *(extra or []),
                      "-f", "null", "-"],
                     capture_output=True, timeout=12,
                     creationflags=CREATE_NO_WINDOW,
                 )
-                ok = res.returncode == 0 and not (res.stderr or b"").strip()
+                stderr = (res.stderr or b"").decode("utf-8", "replace")
+                # 不能用「stderr 非空」判失败：SVT-AV1 成功时也会打一大段
+                # Svt[info] 横幅（实测），那会把好编码器误判成不可用
+                ok = res.returncode == 0 and not _looks_failed(stderr)
+                if not ok:
+                    # 失败原因要留给用户看（如 NVENC 的驱动版本要求），
+                    # 否则界面只会说"不可用"，用户不知道该怎么办
+                    reason = _probe_failure_reason(stderr) or ""
             except Exception:
                 ok = False
         self._usable[key] = ok
+        # 原因按**完整 key** 存：带附加参数的那次探测（如 10 位色深）不能把
+        # 8 位那次的原因（如「驱动过旧」）覆盖掉，两者是两回事
+        self._unusable_reason[key] = reason
         return ok
 
 

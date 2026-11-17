@@ -7,11 +7,18 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+# 🔴 必须在 import app.context 之前：本脚本会构造 AppContext / MainWindow，
+# 而配置里存着用户真实的输出目录（output_mode=custom）。不隔离的话，
+# 每次跑都会往用户输出夹里写 电影_立体声.m4a，第二次开始还被加上 _2、_3
+# （真实发生过：连跑两次后断言「输出名取共同词干」失败）。
+os.environ["APPDATA"] = tempfile.mkdtemp(prefix="xiaowan_merge_cfg_")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -66,6 +73,10 @@ def main() -> int:
     app = QApplication(sys.argv[:1])
     app.setStyle("Fusion")
     ctx = AppContext()
+    # 输出指向本次测试目录：任务名要可预期（落在用户真实输出夹里会被 unique_path
+    # 加上 _1/_2，断言就不稳了）
+    ctx.config.output_mode = "custom"
+    ctx.config.output_dir = str(outdir)
     # 页面会把自己的模式写进配置，测试前后要还原用户原本的设置
     saved_merge = ctx.config.downmix_merge
     saved_layout = ctx.config.downmix_merge_layout
@@ -215,6 +226,9 @@ def main() -> int:
                 check("时长约 2s",
                       abs(w.getnframes() / w.getframerate() - 2.0) < 0.3,
                       f"{w.getnframes() / w.getframerate():.2f}s")
+            # 收尾删掉产物：留着的话，同一个目录再跑一次就变成 电影_立体声_1.m4a，
+            # 「输出名取共同词干」这条断言就假失败
+            task.dst.unlink(missing_ok=True)
 
     print("\n[10.5] 合并模式下只放 1 个多声道文件 → 必须走普通下混")
     big = tmp / "整段电影_5.1.mkv"

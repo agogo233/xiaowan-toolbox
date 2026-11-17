@@ -5,7 +5,7 @@
 ;     ISCC.exe packaging\xiaowan_setup.iss
 ;
 ; 产物：
-;     installer_out\小丸工具箱-1.2.4-安装程序.exe
+;     installer_out\小丸工具箱-2.0.0-安装程序.exe
 ;
 ; 特性：
 ;   · 默认装到当前用户目录（不需要管理员），高级选项里也能改成装给所有用户
@@ -17,7 +17,7 @@
 
 #define MyAppName "小丸工具箱"
 #define MyAppNameEn "XiaoWan Toolbox"
-#define MyAppVersion "1.2.4"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "52ting"
 #define MyAppURL "https://github.com/52ting/xiaowan-toolbox"
 #define MyAppExeName "小丸工具箱.exe"
@@ -59,10 +59,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 
 OutputDir=..\installer_out
-; 文件名用 ASCII：GitHub Release 会把资产名里的非 ASCII 字符直接删掉
-; （「小丸工具箱-1.2.4-安装程序.exe」会被削成「-1.2.4-.exe」），
-; 所以安装包、源码包统一用英文名，程序窗口标题仍是中文。
-OutputBaseFilename=XiaoWanToolbox-{#MyAppVersion}-Setup
+OutputBaseFilename={#MyAppName}-{#MyAppVersion}-安装程序
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

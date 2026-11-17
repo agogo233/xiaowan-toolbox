@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel,
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMenu,
                                QPushButton, QVBoxLayout, QWidget)
 
 from ...core.presets import Preset
@@ -115,7 +115,9 @@ def _wrap(text: str, fm, width: int, max_lines: int) -> list[str]:
     """按像素宽度折行：英文单词保持完整，中文逐字断行。"""
     import re
 
-    tokens = re.findall(r"[A-Za-z0-9._\-/%]+|\S", text)
+    # 词尾带空格一起当成一个 token：否则拼回去时 "tune animation" 会变成
+    # "tuneanimation"、分隔符 " · " 也会被吞掉
+    tokens = re.findall(r"[A-Za-z0-9._\-/%]+\s*|\S\s*", text)
     lines: list[str] = []
     cur = ""
     for tok in tokens:
@@ -129,12 +131,41 @@ def _wrap(text: str, fm, width: int, max_lines: int) -> list[str]:
             cur = candidate
     if cur and len(lines) < max_lines:
         lines.append(cur)
-    if lines and "".join(lines) != text:
+    if lines and "".join(lines).replace(" ", "") != text.replace(" ", ""):
+        # 比较时忽略空格：重新拼行时词间空格会被吃掉，直接比字符串会永远不等，
+        # 导致文字明明放得下也硬加一个「…」（实测每张预设卡都带省略号）
         last = lines[-1]
         while last and fm.horizontalAdvance(last + "…") > width:
             last = last[:-1]
         lines[-1] = last + "…"
+    elif len(lines) > 1 and fm.horizontalAdvance(lines[-1]) < width * 0.35:
+        # 末行只剩一两个字（实测「动漫番剧」的「块」）时，从上一行末尾匀几个字过来
+        while len(lines[-2]) > 1:
+            moved = lines[-2][-1] + lines[-1]
+            rest = lines[-2][:-1]
+            if fm.horizontalAdvance(moved) > width or fm.horizontalAdvance(moved) > fm.horizontalAdvance(rest):
+                break
+            lines[-2], lines[-1] = rest, moved
     return lines
+
+
+# 预设卡片的文字尺寸与内边距。名称和标签抢的是同一行的宽度：
+#   CHIP_W - CHIP_PAD*2 - 标签宽 - TAG_GAP  ≥  名称宽
+# 不满足时名称被画成省略号（标题就看不见了），所以这几个数别随手改，
+# 改完跑 tests/preset_chip_test.py。
+CHIP_PAD = 11      # 卡片左右内边距
+TAG_PAD_X = 12     # 标签胶囊的左右内边距
+TAG_GAP = 8        # 名称与标签之间的最小间隙
+
+
+def tag_width(fm: QFontMetrics, tagline: str) -> int:
+    """标签胶囊占的宽度（含内边距）；没有标签就是 0。"""
+    return fm.horizontalAdvance(tagline) + TAG_PAD_X if tagline else 0
+
+
+def name_room(chip_w: int, fm_tag: QFontMetrics, tagline: str) -> int:
+    """名称能用多少像素 = 卡片内宽扣掉标签和间隙。"""
+    return chip_w - CHIP_PAD * 2 - tag_width(fm_tag, tagline) - TAG_GAP
 
 
 class PresetFlowRow(QWidget):
@@ -142,7 +173,7 @@ class PresetFlowRow(QWidget):
 
     heightChanged = Signal(int)
 
-    CHIP_W, CHIP_H, GAP = 168, 66, 8
+    CHIP_W, CHIP_H, GAP = 168, 78, 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -196,7 +227,7 @@ class PresetChip(QPushButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        pad = 11
+        pad = CHIP_PAD
         w = self.width() - pad * 2
 
         # 右上角标签（先量出宽度，给名称让位）
@@ -206,10 +237,12 @@ class PresetChip(QPushButton):
             f2.setPointSize(8)
             f2.setBold(True)
             p.setFont(f2)
-            fm2 = p.fontMetrics()
-            tag_w = fm2.horizontalAdvance(self.preset.tagline) + 12
+            tag_w = tag_width(p.fontMetrics(), self.preset.tagline)
 
-        # 名称（与标签同排时自动省略，避免重叠）
+        # 名称：放不下就按剩余宽度省略。不给 0.55 的下限——之前用下限兜底，
+        # 结果 4 字名称会画到标签底下去（「极限小体积」实测被压住）。
+        # 省略号只是兜底，正常情况这里不该触发：名称宽度要留够，
+        # 靠 tests/preset_chip_test.py 守住（「H.265 兼容压缩」就是这么被切没的）。
         f = QFont()
         f.setPointSize(11)
         f.setBold(True)
@@ -217,16 +250,16 @@ class PresetChip(QPushButton):
         fm = p.fontMetrics()
         name = self.preset.name
         if tag_w:
-            avail = w - tag_w - 8
-            if fm.horizontalAdvance(name) > avail:
-                name = fm.elidedText(name, Qt.TextElideMode.ElideRight,
-                                     max(avail, int(w * 0.55)))
+            name = fm.elidedText(name, Qt.TextElideMode.ElideRight,
+                                 max(w - tag_w - TAG_GAP, 0))
         p.setPen(QColor(pal["text"]))
         p.drawText(pad, 22, name)
 
         if self.preset.tagline:
+            from PySide6.QtCore import QRectF
+
             p.setFont(f2)
-            chip = self._tag_rect(pad + w - tag_w)
+            chip = QRectF(pad + w - tag_w, 10, tag_w, 16)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(pal["accent_soft"]))
             p.drawRoundedRect(chip, 7, 7)
@@ -240,22 +273,10 @@ class PresetChip(QPushButton):
         p.setPen(QColor(pal["text_dim"]))
         fm3 = p.fontMetrics()
         y = 38
-        for line in _wrap(self.preset.detail, fm3, w, 2):
+        for line in _wrap(self.preset.detail, fm3, w, 3):
             p.drawText(pad, y, line)
             y += 14
         p.end()
-
-    def _tag_rect(self, x: float):
-        from PySide6.QtCore import QRectF
-
-        f = QFont()
-        f.setPointSize(8)
-        f.setBold(True)
-        from PySide6.QtGui import QFontMetrics
-
-        fm = QFontMetrics(f)
-        w = fm.horizontalAdvance(self.preset.tagline) + 14
-        return QRectF(x, 10, w, 16)
 
 
 # --------------------------------------------------------------------------- #
@@ -263,9 +284,16 @@ class PresetChip(QPushButton):
 # --------------------------------------------------------------------------- #
 
 class OutputRow(QWidget):
-    """输出位置选择：与源文件相同 / 指定目录。"""
+    """输出位置：一个控件说清"文件放哪"。
+
+    原来拆成「下拉选模式 + 选择…按钮 + 打开目录」三个控件，模式和值是两回事：
+    在「与源文件相同目录」模式下点选择…，选完文件夹界面毫无变化（mode 没改）。
+    现在合并成一个按钮，显示当前去向，点开就是三个动作的菜单。
+    """
 
     changed = Signal()
+
+    WIDTH = 240          # 定宽：路径过长时中间省略，菜单里能看到全路径
 
     def __init__(self, ctx, parent=None):
         super().__init__(parent)
@@ -275,69 +303,78 @@ class OutputRow(QWidget):
         lay.setSpacing(8)
 
         lay.addWidget(label("输出到"))
-        self.combo = QComboBox()
-        self.combo.addItem("与源文件相同目录", "source")
-        self.combo.addItem("指定文件夹", "custom")
-        self.combo.setMinimumWidth(150)
-        lay.addWidget(self.combo)
+        self.btn_dest = QPushButton()
+        self.btn_dest.setObjectName("OutputDest")
+        self.btn_dest.setFixedWidth(self.WIDTH)
+        self.btn_dest.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_dest.clicked.connect(self._show_menu)
+        lay.addWidget(self.btn_dest)
 
-        self.path_label = label("", "Hint")
-        self.path_label.setMinimumWidth(200)
-        lay.addWidget(self.path_label, 1)
-
-        self.btn_pick = QPushButton("选择…")
-        self.btn_open = QPushButton("打开目录")
-        lay.addWidget(self.btn_pick)
-        lay.addWidget(self.btn_open)
-
-        self.combo.currentIndexChanged.connect(self._on_mode)
-        self.btn_pick.clicked.connect(self._pick)
-        self.btn_open.clicked.connect(self._open)
+        self.menu = QMenu(self)
+        self.act_pick = self.menu.addAction("选择文件夹…")
+        self.act_reset = self.menu.addAction("恢复为源文件目录")
+        self.act_open = self.menu.addAction("打开当前目录")
+        self.act_pick.triggered.connect(self._pick)
+        self.act_reset.triggered.connect(self._reset)
+        self.act_open.triggered.connect(self._open)
         self._sync()
 
     # ------------------------------------------------------------------ #
     def _sync(self) -> None:
         cfg = self.ctx.config
-        self.combo.setCurrentIndex(0 if cfg.output_mode == "source" else 1)
         if cfg.output_mode == "source":
-            self.path_label.setText("输出到源文件所在的文件夹")
-            self.btn_open.setEnabled(False)
+            self.btn_dest.setText("与源文件相同目录")
+            self.btn_dest.setToolTip("输出到每个源文件所在的文件夹")
         else:
-            self.path_label.setText(cfg.output_dir or "（未设置，请点「选择…」）")
-            self.btn_pick.setEnabled(True)
-            self.btn_open.setEnabled(bool(cfg.output_dir))
+            path = cfg.output_dir or "（未设置）"
+            fm = QFontMetrics(self.btn_dest.font())
+            self.btn_dest.setText(fm.elidedText(path, Qt.TextElideMode.ElideMiddle,
+                                               self.WIDTH - 34))
+            self.btn_dest.setToolTip(path)
+        self.act_reset.setEnabled(cfg.output_mode != "source")
+        self.act_open.setEnabled(bool(cfg.output_dir) and Path(cfg.output_dir).exists())
 
-    def _on_mode(self, index: int) -> None:
-        self.ctx.config.output_mode = self.combo.itemData(index) or "source"
-        self.ctx.save_config()
-        self._sync()
-        self.changed.emit()
+    def _show_menu(self) -> None:
+        self.menu.exec(self.btn_dest.mapToGlobal(self.btn_dest.rect().bottomLeft()))
 
     def _pick(self) -> None:
         start = self.ctx.config.output_dir or str(Path.home())
         path = QFileDialog.getExistingDirectory(self, "选择输出文件夹", start)
-        if path:
-            self.ctx.config.output_dir = path
-            self.ctx.save_config()
-            self._sync()
-            self.changed.emit()
+        if not path:
+            return
+        # 选完必须同时切到「指定文件夹」，否则模式还是 source，界面不会有任何变化
+        self.ctx.config.output_dir = path
+        self.ctx.config.output_mode = "custom"
+        self.ctx.save_config()
+        self._sync()
+        self.changed.emit()
+
+    def _reset(self) -> None:
+        self.ctx.config.output_mode = "source"
+        self.ctx.save_config()
+        self._sync()
+        self.changed.emit()
 
     def _open(self) -> None:
         target = self.ctx.config.output_dir
         if target and Path(target).exists():
             open_in_file_manager(Path(target))
         else:
-            self.path_label.setText("目录不存在，请重新选择")
+            self._sync()
 
 
 class ActionBar(QWidget):
-    """页面底部：说明文字 + 主操作按钮。"""
+    """页面底部：输出位置 + 说明文字 + 主操作按钮，同处一行。"""
 
-    def __init__(self, button_text: str, parent=None):
+    def __init__(self, button_text: str, output: OutputRow | None = None,
+                 parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
+        self.output = output
+        if output is not None:
+            lay.addWidget(output)
         self.hint = label("", "Hint")
         self.hint.setWordWrap(True)
         lay.addWidget(self.hint, 1)

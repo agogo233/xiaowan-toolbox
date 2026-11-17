@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QGridLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QWidget
 
 from ...core.pipeline import build_audio_task
 from ...core.presets import (AUDIO_BITRATES, AUDIO_FORMATS, CHANNEL_OPTIONS,
                              SAMPLE_RATES)
 from ...core.utils import AUDIO_EXTS, VIDEO_EXTS, human_size
-from ..widgets import Card, FileTable, label
+from ..widgets import Card, Combo, FileArea, FileTable, label
 from .shared import ActionBar, OutputRow, Page, make_file_toolbar
 
 
@@ -21,17 +21,15 @@ class AudioPage(Page):
                          "从视频里抽出音轨，或把音频转成别的格式。支持批量。")
 
         self.table = FileTable(ctx.env_provider, VIDEO_EXTS | AUDIO_EXTS)
-        card_files = Card()
-        card_files.add(make_file_toolbar(self.table, VIDEO_EXTS | AUDIO_EXTS))
-        card_files.layout().addWidget(self.table, 1)
+        area_files = FileArea(
+            self.table, make_file_toolbar(self.table, VIDEO_EXTS | AUDIO_EXTS))
 
         # 底部操作栏要先创建：参数区在构建过程中就会回调 _update_hint
-        self.bar = ActionBar("开始提取")
+        self.bar = ActionBar("开始提取", OutputRow(ctx))
         self.bar.button.clicked.connect(self._on_start)
 
-        self.root.addWidget(card_files, 1)
+        self.root.addWidget(area_files, 1)
         self.root.addWidget(self._build_params())
-        self.root.addWidget(OutputRow(ctx))
         self.root.addWidget(self.bar)
 
         self.table.filesChanged.connect(self._update_hint)
@@ -42,21 +40,21 @@ class AudioPage(Page):
         card = Card()
         card.add(label("输出参数", "SectionTitle"))
 
-        self.cmb_format = QComboBox()
+        self.cmb_format = Combo()
         for ext, text, _codec, _br in AUDIO_FORMATS:
             self.cmb_format.addItem(text, ext)
         self.cmb_format.currentIndexChanged.connect(self._on_format_changed)
 
-        self.cmb_bitrate = QComboBox()
+        self.cmb_bitrate = Combo()
         for br in AUDIO_BITRATES:
             self.cmb_bitrate.addItem(f"{br} kbps", br)
         self.cmb_bitrate.setCurrentIndex(1)
 
-        self.cmb_rate = QComboBox()
+        self.cmb_rate = Combo()
         for value, text in SAMPLE_RATES:
             self.cmb_rate.addItem(text, value)
 
-        self.cmb_channels = QComboBox()
+        self.cmb_channels = Combo()
         for value, text in CHANNEL_OPTIONS:
             self.cmb_channels.addItem(text, value)
 

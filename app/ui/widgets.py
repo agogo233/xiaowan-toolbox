@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import (QEvent, QObject, QRectF, QRunnable, QSize, Qt,
-                            QThreadPool, Signal)
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QHeaderView,
-                               QLabel, QSizePolicy, QStyledItemDelegate,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import (QEvent, QEasingCurve, QObject, QPoint,
+                            QPropertyAnimation, QRect, QRectF, QRunnable, QSize,
+                            Qt, QThreadPool, Signal)
+from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
+                               QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
+                               QHeaderView, QLabel, QListView, QSizePolicy,
+                               QStyledItemDelegate, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core.ffmpeg import MediaInfo, probe
 from ..core.utils import (VIDEO_EXTS, AUDIO_EXTS, file_manager_label,
@@ -28,6 +30,211 @@ def label(text: str = "", role: str = "", wrap: bool = False) -> QLabel:
         lb.setObjectName(role)
     lb.setWordWrap(wrap)
     return lb
+
+
+class Combo(QComboBox):
+    """下拉框：选项面板画在**主窗口里**，不再开独立弹窗。
+
+    Qt 的 QComboBox 下拉，本质是一个独立的 Qt::Popup 窗口
+    （QComboBoxPrivateContainer）。那个窗口是所有别扭感的来源：
+    圆角要隔着窗口描、动画只能动窗口几何（看着像在跳）、
+    字体渲染和重绘上下文都跟主界面不是一套；贴在屏幕边缘时还会翻向另一侧。
+
+    这里只重写 showPopup / hidePopup —— 模型、currentData / findData / addItem
+    和全部信号都沿用 QComboBox，**调用点一行都不用改**。
+    选项列表是主窗口的子控件，于是：同一套主题、同一套圆角、窗口内重绘的展开动画。
+
+    键盘（主窗口内面板自己能收到按键，不用依赖那个弹窗窗口）：
+    上下键移动、回车确认、Esc 关闭。
+    """
+
+    ROW_H = 30          # 每项行高
+    PAD = 6             # 面板内边距
+    MAX_H = 340         # 面板最高，超出就滚动
+    DURATION = 130      # 展开时长
+
+    _open: "Combo | None" = None    # 同一时刻只允许一个面板打开
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._panel: QFrame | None = None
+        self._view: QListView | None = None
+        self._anim: QPropertyAnimation | None = None
+        self.currentIndexChanged.connect(self._sync_highlight)
+
+    # ------------------------------------------------------------------ #
+    # 面板
+    # ------------------------------------------------------------------ #
+    def _build_panel(self) -> None:
+        panel = QFrame(self.window())
+        panel.setObjectName("ComboPanel")
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        shadow = QGraphicsDropShadowEffect(panel)
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 60))
+        panel.setGraphicsEffect(shadow)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(self.PAD, self.PAD, self.PAD, self.PAD)
+        lay.setSpacing(0)
+        view = QListView(panel)
+        view.setObjectName("ComboPanelList")
+        view.setModel(self.model())
+        view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setUniformItemSizes(True)
+        view.setMouseTracking(True)
+        view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        view.setFrameShape(QFrame.Shape.NoFrame)
+        view.clicked.connect(self._on_item_clicked)
+        lay.addWidget(view)
+        panel.hide()
+        self._panel, self._view = panel, view
+
+    def _panel_rect(self) -> QRect:
+        """面板放在控件下方；下方放不下就翻到上方，再夹在窗口内。"""
+        top = self.window()
+        fm = self.fontMetrics()
+        text_w = max([fm.horizontalAdvance(self.itemText(i))
+                      for i in range(self.count())] + [0])
+        w = min(max(self.width(), text_w + self.PAD * 2 + 26), top.width() - 8)
+
+        # 高度按真实行高算，别用固定值：差几 px 就会平白冒出一条滚动条
+        row_h = self.ROW_H
+        if self._view is not None and self.count():
+            hint = self._view.sizeHintForRow(0)
+            if hint > 0:
+                row_h = hint
+        # +2 是 Qt 的取整余量：内容只要比视口高 1px，视图就会多出一格可滚动范围，
+        # 于是展开动画结束时"面板自己往下滚了一下"（用户报的 bug 就是这个）
+        full = max(self.count(), 1) * row_h + self.PAD * 2 + 2
+        h = min(full, self.MAX_H)
+        if self._view is not None:
+            self._view.setVerticalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff if full <= self.MAX_H
+                else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        origin = top.mapFromGlobal(self.mapToGlobal(QPoint(0, 0)))
+        x = max(4, min(origin.x(), top.width() - w - 4))
+        below = origin.y() + self.height()
+        y = below if below + h <= top.height() - 4 else origin.y() - h
+        y = max(4, min(y, top.height() - h - 4))
+        return QRect(x, y, w, h)
+
+    # ------------------------------------------------------------------ #
+    # 开关
+    # ------------------------------------------------------------------ #
+    def showPopup(self) -> None:      # noqa: N802
+        if self.count() == 0:
+            return
+        if self._panel is not None and self._panel.isVisible():
+            self.hidePopup()          # 再点一次收起
+            return
+        if Combo._open is not None and Combo._open is not self:
+            Combo._open.hidePopup()
+        if self._panel is None:
+            self._build_panel()
+
+        end = self._panel_rect()
+        below = self.window().mapFromGlobal(
+            self.mapToGlobal(QPoint(0, self.height()))).y()
+        start = (QRect(end.x(), end.y(), end.width(), 0) if end.top() >= below - 2
+                 else QRect(end.x(), end.bottom() + 1, end.width(), 0))
+
+        self._view.setCurrentIndex(self.model().index(self.currentIndex(), 0))
+        self._panel.setGeometry(start)
+        self._panel.show()
+        self._panel.raise_()
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        Combo._open = self
+
+        anim = QPropertyAnimation(self._panel, b"geometry", self._panel)
+        anim.setDuration(self.DURATION)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.finished.connect(self._on_grown)
+        self._anim = anim
+        anim.start()
+
+    def hidePopup(self) -> None:      # noqa: N802
+        if self._anim is not None:
+            self._anim.stop()
+        if self._panel is not None and self._panel.isVisible():
+            self._panel.hide()
+        if Combo._open is self:
+            Combo._open = None
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+
+    # ------------------------------------------------------------------ #
+    # 交互
+    # ------------------------------------------------------------------ #
+    def _on_grown(self) -> None:
+        if self._panel is None:
+            return
+        self._panel.setGeometry(self._panel_rect())
+        # 只保证当前项可见；不要 PositionAtCenter —— 只要视图有一格可滚动范围，
+        # 它就会真的滚一下，看起来像"面板自己往下跳"
+        self._view.scrollTo(self._view.currentIndex(),
+                            QAbstractItemView.ScrollHint.EnsureVisible)
+
+    def _on_item_clicked(self, index) -> None:
+        self.setCurrentIndex(index.row())
+        # 🔴 必须自己发 activated：重写 popup 之后 Qt 不再知道"这是用户选的"。
+        # 而"用户选的"和"代码设的"要区分开 —— 例如目标体积页的色深会跟随编码器
+        # 自动切换，一旦用户亲手选过就该停止跟随（用 activated 判定）。
+        self.activated.emit(index.row())
+        self.hidePopup()
+
+    def _sync_highlight(self, row: int) -> None:
+        if self._view is not None and self._panel is not None \
+                and self._panel.isVisible():
+            self._view.setCurrentIndex(self.model().index(row, 0))
+
+    def eventFilter(self, obj, event) -> bool:      # noqa: N802
+        from PySide6.QtWidgets import QComboBox as _QC
+
+        if self._panel is None or not self._panel.isVisible():
+            return False
+        et = event.type()
+        # 面板打开期间：点到别处、滚页面、窗口被拖动或缩放，都关掉
+        if et in (QEvent.Type.MouseButtonPress, QEvent.Type.Wheel):
+            pos = event.globalPosition().toPoint()
+            inside = (self._panel.rect().contains(self._panel.mapFromGlobal(pos))
+                      or self.rect().contains(self.mapFromGlobal(pos)))
+            if not inside:
+                self.hidePopup()
+        elif et in (QEvent.Type.Move, QEvent.Type.Resize) and obj is self.window():
+            self.hidePopup()
+        return False
+
+    def keyPressEvent(self, event) -> None:         # noqa: N802
+        if self._panel is not None and self._panel.isVisible():
+            key = event.key()
+            if key == Qt.Key.Key_Escape:
+                self.hidePopup()
+                return
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                # 回车确认也是"用户选的"，与鼠标点击同等对待
+                self.activated.emit(self.currentIndex())
+                self.hidePopup()
+                return
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                row = self.currentIndex() + (1 if key == Qt.Key.Key_Down else -1)
+                row = max(0, min(row, self.count() - 1))
+                self.setCurrentIndex(row)
+                self._view.scrollTo(self._view.currentIndex(),
+                                    QAbstractItemView.ScrollHint.EnsureVisible)
+                return
+            if key == Qt.Key.Key_F4:          # 再按一次收起
+                self.hidePopup()
+                return
+        super().keyPressEvent(event)
 
 
 class HLine(QFrame):
@@ -112,6 +319,39 @@ class _ProbeJob(QRunnable):
 # 文件列表
 # --------------------------------------------------------------------------- #
 
+class FileArea(Card):
+    """文件区：工具栏 + 文件表，共用**一张**面板。
+
+    原来这里是三层框叠在一起：卡片一层、表格自己一层边框、
+    列表为空时表格里再画一个虚线框 —— 看着像三个盒子摞起来。
+
+    现在只留一层：面板本身就是投放区。
+    有文件时是普通卡片；列表为空时卡片边框变成虚线，
+    「这里可以放文件」由面板直接表达，表格不再画自己的边框和虚线框。
+    """
+
+    def __init__(self, table: "FileTable", toolbar: QWidget,
+                 extra: QWidget | list | None = None, parent=None):
+        super().__init__(parent)
+        self.table = table
+        self.add(toolbar)
+        if extra is not None:
+            for w in (extra if isinstance(extra, (list, tuple)) else [extra]):
+                self.add(w)
+        self.layout().addWidget(table, 1)
+        table.filesChanged.connect(self._sync_dropzone)
+        self._sync_dropzone()
+
+    def _sync_dropzone(self) -> None:
+        empty = self.table.rowCount() == 0
+        if self.property("dropzone") == empty:
+            return
+        # 动态属性 + 重新 polish，QSS 的 [dropzone="true"] 才会生效
+        self.setProperty("dropzone", empty)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
 class FileTable(QTableWidget):
     """支持拖拽导入、异步读取媒体信息的文件表格。"""
 
@@ -147,7 +387,9 @@ class FileTable(QTableWidget):
         self.verticalHeader().setVisible(False)
         self.verticalHeader().setDefaultSectionSize(30)
         self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        self.setMinimumHeight(160)
+        # 列表区最小高度：它直接决定窗口最矮能有多矮。140 = 表头 + 3 行多一点，
+        # 再压会让 3 个文件就出现滚动条，列表反而不好用
+        self.setMinimumHeight(140)
 
         hh = self.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -157,6 +399,15 @@ class FileTable(QTableWidget):
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         hh.setHighlightSections(False)
         hh.setSectionsMovable(False)
+
+    def sizeHint(self) -> QSize:      # noqa: N802
+        """列表区是拉伸项：高度由布局给，别拿默认的"理想高度"去顶高窗口。
+
+        QTableView 默认 sizeHint 要 190+ px，而它只是页面里的一块，
+        结果整个窗口的最小高度被它白撑高几十像素。
+        """
+        hint = super().sizeHint()
+        return QSize(hint.width(), self.minimumHeight())
 
     # ---------------- 数据 ---------------- #
     @property
@@ -407,15 +658,12 @@ class FileTable(QTableWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
         if self.rowCount() == 0:
+            # 虚线框不在这里画：空列表时整张面板（FileArea）的边框就是虚线的，
+            # 这里只补两行提示文字，避免再套一层框
             p = QPainter(self.viewport())
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             pal = palette()
-            pen = QPen(QColor(pal["border_strong"]))
-            pen.setStyle(Qt.PenStyle.DashLine)
-            pen.setWidth(2)
-            p.setPen(pen)
-            rect = QRectF(self.viewport().rect()).adjusted(9, 9, -9, -9)
-            p.drawRoundedRect(rect, 10, 10)
+            rect = self.viewport().rect()
 
             p.setPen(QColor(pal["text_dim"]))
             f = QFont()
@@ -423,12 +671,13 @@ class FileTable(QTableWidget):
             p.setFont(f)
             p.drawText(rect.adjusted(0, -14, 0, 0),
                        Qt.AlignmentFlag.AlignCenter, "把视频 / 音频文件拖到这里")
+
             f.setPointSize(10)
             p.setFont(f)
             p.setPen(QColor(pal["text_faint"]))
             p.drawText(rect.adjusted(0, 20, 0, 0),
                        Qt.AlignmentFlag.AlignCenter,
-                       "也可以点击下方「添加文件」，支持批量与整个文件夹")
+                       "也可以点上面的「添加文件」，支持批量与整个文件夹")
             p.end()
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802

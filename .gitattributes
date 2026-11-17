@@ -1,0 +1,22 @@
+# 全仓统一 LF。本项目所有文本文件在仓库里都是 LF（Windows 上也不例外）——
+# 曾多次因为 Python 的 Path.write_text() 在 Windows 默认把 \n 转成 \r\n，
+# 导致"只改一行"的提交把整个文件显示为全量重写。显式声明后 git 会统一处理。
+* text=auto eol=lf
+
+# 二进制：不要做任何换行转换（PNG/ICO 的字节流里常碰巧出现 0D 0A，
+# 被当成 CRLF 统计是假阳性，但显式声明更安全）
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.7z binary
+*.zip binary
+*.exe binary
+*.dll binary
+
+# ---- 公开发布（git archive / GitHub 源码下载包）时排除的本地文件 ----
+# .agents/ 是 AI 协作记忆、AGENTS.md 是本地开发约定，都不随公开仓库分发。
+# 加了 export-ignore 后，git archive 与 GitHub 的「Download ZIP」都会自动排除。
+.agents/ export-ignore
+AGENTS.md export-ignore

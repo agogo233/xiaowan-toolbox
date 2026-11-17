@@ -26,7 +26,20 @@ Thumbs.db
 desktop.ini
 
 # ---- 本地临时文件 ----
+# 🔴 不要写 `_*.py`：那会把 app/__init__.py 一起排除（曾因此丢过版本号文件）。
+# 只排除根目录下的临时脚本。
 _*.txt
-_*.py
-!_*.gitkeep
+/_tmp*.py
+/_probe*.py
 crash.log
+
+# ---- mac 版内置 ffmpeg（每个 43~75MB，不进仓库；打包时放 bin_mac/） ----
+bin_mac/*
+!bin_mac/README.md
+
+# ---- mac 版离线 wheel（约 180MB，不进仓库；打包时由 fetch_mac_wheels.py 生成） ----
+wheels_mac/*.whl
+
+# ---- 本地开发专用，不公开（导出包的安全网，防止以后误提交） ----
+.agents/
+AGENTS.md

@@ -1,15 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置（在 Windows 上构建免安装 exe）。
+"""PyInstaller 打包配置（Windows · **单文件 onefile**）。
 
 用法（项目根目录）：
-    pyinstaller packaging/xiaowan_win.spec --noconfirm
+    python packaging/build_windows.py            # 默认走这个 spec
 
 产物：
-    dist/小丸工具箱/小丸工具箱.exe      双击即用，无需装 Python
-    （onedir 模式：启动快、体积可控；拷整个文件夹即可分发）
+    dist/小丸工具箱.exe      单个文件，双击即用（约 460 MB，含 ffmpeg）
 
-如果仓库根目录存在 bin/ffmpeg.exe 与 bin/ffprobe.exe，会被一并打进包里，
-实现"开箱即用、无需另外安装 ffmpeg"。
+为什么是 onefile（AGENTS.md 的既定偏好）：
+    Windows 端用户要"一个文件就能发"，目录式得拷一整个文件夹。
+    代价是每次启动都要把运行时解压到临时目录 —— 内置 ffmpeg+ffprobe
+    就有 460 MB，实测启动明显变慢，这是明确的取舍，不是疏漏。
+
+🔴 单文件下 `sys._MEIPASS` 是**临时目录**，退出即删。所以：
+    - 配置/日志必须写用户目录（app/core/utils.data_dir() 已按 APPDATA 走，
+      不依赖 _MEIPASS），否则每次启动都是"全新安装"。
+    - 任何"记住上次状态"的文件都不能落在 exe 旁边。
+
+目录式（启动快）见 packaging/xiaowan_win_onedir.spec。
 """
 
 from pathlib import Path
@@ -20,7 +28,8 @@ ffmpeg = bin_dir / "ffmpeg.exe"
 ffprobe = bin_dir / "ffprobe.exe"
 ico = ROOT / "packaging" / "icon.ico"
 
-datas = [(str(ROOT / "app" / "resources" / "icon.png"), "app/resources")]
+datas = [(str(ROOT / "app" / "resources" / "icon.png"), "app/resources"),
+        (str(ROOT / "app" / "resources" / "qrcode.png"), "app/resources")]
 if ffmpeg.is_file():
     datas.append((str(ffmpeg), "bin"))
 if ffprobe.is_file():
@@ -58,26 +67,20 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# onefile：不设 exclude_binaries、不建 COLLECT，所有依赖塞进同一个 exe
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="小丸工具箱",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
+    upx=False,                          # upx 压 Qt 的 DLL 容易出问题，关掉
+    runtime_tmpdir=None,
     console=False,                      # 关键：不弹黑色命令行窗口
     disable_windowed_traceback=False,
     icon=str(ico) if ico.is_file() else None,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="小丸工具箱",
 )

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox,
                                QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout,
                                QMessageBox, QPushButton, QRadioButton,
                                QScrollArea, QSlider, QVBoxLayout, QWidget)
@@ -25,7 +25,7 @@ from ...core.presets import (DOWNMIX_FORMATS, DOWNMIX_BITRATES,
                              MERGE_LAYOUTS, ROLE_NAME, VIDEO_CONTAINERS,
                              DownmixSettings, estimate_audio_mb, format_size_mb)
 from ...core.utils import AUDIO_EXTS, VIDEO_EXTS
-from ..widgets import Card, FileTable, label
+from ..widgets import Card, Combo, FileArea, FileTable, label
 from .shared import (ActionBar, OutputRow, Page, PresetChip, PresetFlowRow,
                      make_file_toolbar)
 
@@ -64,21 +64,19 @@ class DownmixPage(Page):
 
         # ---------------- 文件 ---------------- #
         self.table = FileTable(ctx.env_provider, VIDEO_EXTS | AUDIO_EXTS)
-        card_files = Card()
-        card_files.add(make_file_toolbar(self.table, VIDEO_EXTS | AUDIO_EXTS))
-        card_files.add(self._build_mode_row())
-        card_files.add(self._build_merge_block())
-        card_files.layout().addWidget(self.table, 1)
-        self.root.addWidget(card_files, 1)
+        area_files = FileArea(
+            self.table,
+            make_file_toolbar(self.table, VIDEO_EXTS | AUDIO_EXTS),
+            extra=[self._build_mode_row(), self._build_merge_block()])
+        self.root.addWidget(area_files, 1)
 
         # 底部操作栏先建：参数区构建时就会回调 _update_hint
-        self.bar = ActionBar("开始下混")
+        self.bar = ActionBar("开始下混", OutputRow(ctx))
         self.bar.button.clicked.connect(self._on_start)
         self._chips: dict[str, PresetChip] = {}
 
         self.root.addWidget(self._build_presets())
         self.root.addWidget(self._build_params())
-        self.root.addWidget(OutputRow(ctx))
         self.root.addWidget(self.bar)
 
         self.table.filesChanged.connect(self._on_files_changed)
@@ -133,7 +131,7 @@ class DownmixPage(Page):
         lay.setSpacing(8)
         lay.addWidget(label("声道布局"))
 
-        self.cmb_layout = QComboBox()
+        self.cmb_layout = Combo()
         for value, text in MERGE_LAYOUTS:
             self.cmb_layout.addItem(text, value)
         self.cmb_layout.setMinimumWidth(290)
@@ -441,7 +439,7 @@ class DownmixPage(Page):
         card = Card()
         card.add(label("下混参数", "SectionTitle"))
 
-        self.cmb_target = QComboBox()
+        self.cmb_target = Combo()
         for value, text in TARGET_OPTIONS:
             self.cmb_target.addItem(text, value)
         self.cmb_target.currentIndexChanged.connect(self._on_target_changed)
@@ -449,26 +447,26 @@ class DownmixPage(Page):
         self.slider_center, self.spin_center = self._gain_pair(-12.0, 6.0, -3.0)
         self.slider_surround, self.spin_surround = self._gain_pair(-12.0, 6.0, -3.0)
 
-        self.cmb_lfe = QComboBox()
+        self.cmb_lfe = Combo()
         for value, text in LFE_OPTIONS:
             self.cmb_lfe.addItem(text, value)
         self.cmb_lfe.setToolTip(
             "低音炮轨道（LFE）单独存放低频效果。耳机与笔记本放不出来，\n"
             "混进来只会白占动态，所以默认丢弃。")
 
-        self.cmb_format = QComboBox()
+        self.cmb_format = Combo()
         for value, text, _tip in DOWNMIX_FORMATS:
             self.cmb_format.addItem(text, value)
         self.cmb_format.currentIndexChanged.connect(self._on_format_changed)
 
-        self.cmb_bitrate = QComboBox()
+        self.cmb_bitrate = Combo()
         for br in DOWNMIX_BITRATES:
             self.cmb_bitrate.addItem(f"{br} kbps", int(br))
         # 默认对齐 FORMAT_AUDIO_CODEC 里 m4a 的 256kbps：
         # 影视下混里 256 比 192 的环绕细节明显更干净，体积只多 1/3
         self.cmb_bitrate.setCurrentIndex(DOWNMIX_BITRATES.index("256"))
 
-        self.cmb_rate = QComboBox()
+        self.cmb_rate = Combo()
         for value, text in DOWNMIX_SAMPLE_RATES:
             self.cmb_rate.addItem(text, value)
 
@@ -485,7 +483,7 @@ class DownmixPage(Page):
 
         self.chk_loud = QCheckBox("响度标准化")
         self.chk_loud.setToolTip("按 EBU R128 标准统一整体响度，批量处理时各集音量一致。")
-        self.cmb_loud = QComboBox()
+        self.cmb_loud = Combo()
         for value, text in LOUDNESS_OPTIONS:
             self.cmb_loud.addItem(text, value)
 
@@ -630,7 +628,7 @@ class DownmixPage(Page):
             sample_rate=int(self.cmb_rate.currentData() or 0),
         )
 
-    def _set_combo(self, combo: QComboBox, value) -> None:
+    def _set_combo(self, combo: Combo, value) -> None:
         idx = combo.findData(value)
         if idx >= 0:
             combo.setCurrentIndex(idx)

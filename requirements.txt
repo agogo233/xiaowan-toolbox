@@ -1,2 +1,18 @@
-PySide6-Essentials>=6.6
+# 运行依赖
+#
+# 🔴 PySide6 为什么要锁上界（2026-11-16 实测，用户 mac 上装依赖失败）：
+#   新版 PySide6 同时对 Python 版本和 macOS 版本提高要求，写 `>=6.6`
+#   会去装最新的 6.12，而它要求 Python 3.10~3.15 且 wheel 是 macosx_14_0
+#   —— 老 mac（<14）或系统自带 Python 3.9 上会直接「找不到匹配的版本」。
+#
+#   实测各版本的门槛：
+#     6.6.0   Python 3.8~3.12   macOS 11+
+#     6.9.0   Python 3.9~3.13   macOS 12+
+#     6.11.0  Python 3.10~3.14  macOS 13+
+#     6.12.0  Python 3.10~3.15  macOS 14+
+#
+#   锁 `<6.10` 让 6.9.3 被选中：Python 3.9+ 可用、macOS 12+ 可用，
+#   覆盖面最广。本项目用到的 Qt 功能（Widgets/Gui/Core）6.9 完全够。
+#   若你的机器较新、想用新版，改这里即可（Windows 端 6.12 实测正常）。
+PySide6-Essentials>=6.9,<6.10
 imageio-ffmpeg>=0.4.9

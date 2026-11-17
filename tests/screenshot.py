@@ -7,11 +7,16 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+# 🔴 必须在 import app.context 之前：脚本会构造 AppContext / MainWindow，
+# 页面构建过程会调 save_config()，不隔离就会把脚本改过的内存配置写进用户真实配置
+os.environ["APPDATA"] = tempfile.mkdtemp(prefix="xiaowan_shot_cfg_")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

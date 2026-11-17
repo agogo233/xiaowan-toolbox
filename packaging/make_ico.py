@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""把 app/resources/icon.png 转成 Windows 打包用的多尺寸 icon.ico。
+"""把设计稿转成 Windows 打包用的多尺寸 icon.ico。
+
+优先用原始设计稿 packaging/icon_source.png（256×256）—— Windows 的 .ico
+最大也只到 256，从 1024 的 icon.png 缩回去等于"先放大再缩小"，边缘会发软。
 
 用法：
     python packaging/make_ico.py
@@ -11,7 +14,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1] / "app" / "resources"
-SRC = HERE / "icon.png"
+SOURCE = Path(__file__).resolve().parent / "icon_source.png"
+SRC = SOURCE if SOURCE.is_file() else HERE / "icon.png"
 DST = Path(__file__).resolve().parent / "icon.ico"
 
 # Windows 会在不同场合用到这些尺寸（任务栏 16/32、资源管理器 48/256、属性页 128）

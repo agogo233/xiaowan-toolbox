@@ -51,6 +51,7 @@ class VideoSettings:
     container: Container = Container.MP4
     faststart: bool = True
     pix_fmt: str = ""                       # 留空 = auto
+    keep_metadata: bool = True              # 保留拍摄日期/设备/GPS 等（写入 MP4 iTunes tag）
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -78,6 +79,7 @@ def _v(**kw) -> VideoSettings:
 
 HW_H264 = "auto_hw"          # 占位符，提交任务前解析成真正的编码器名
 HW_H265 = "auto_hw_hevc"
+HW_AV1 = "auto_hw_av1"
 
 _HW_TABLE = {
     HW_H264: {
@@ -90,6 +92,13 @@ _HW_TABLE = {
         "win": ["hevc_nvenc", "hevc_qsv", "hevc_amf"],
         "linux": ["hevc_nvenc"],
     },
+    # AV1 硬件编码：只有 NVIDIA NVENC 支持（RTX 40 系起）；
+    # macOS 没有 AV1 硬编（VideoToolbox 不提供），Intel/AMD 的走 QSV/AMF
+    # 的话另算，目前先只接 NVENC —— 本机就是 N 卡。
+    HW_AV1: {
+        "win": ["av1_nvenc"],
+        "linux": ["av1_nvenc"],
+    },
 }
 
 HW_ENCODER_LABEL = {
@@ -97,6 +106,7 @@ HW_ENCODER_LABEL = {
     "hevc_videotoolbox": "Apple VideoToolbox",
     "h264_nvenc": "NVIDIA NVENC",
     "hevc_nvenc": "NVIDIA NVENC",
+    "av1_nvenc": "NVIDIA NVENC",
     "h264_qsv": "Intel Quick Sync",
     "hevc_qsv": "Intel Quick Sync",
     "h264_amf": "AMD AMF",
@@ -136,22 +146,58 @@ def resolve_hw_encoder(codec: str, env=None) -> str | None:
 
 
 def resolve_codec(codec: str, env=None) -> str:
-    """把 auto_hw / auto_hw_hevc 解析成真正的编码器名；解析不出就回退软编。"""
+    """把 auto_hw* 哨兵解析成真正的编码器名；解析不出就回退软编。"""
     if codec == HW_H264:
         return resolve_hw_encoder(HW_H264, env) or "libx264"
     if codec == HW_H265:
         return resolve_hw_encoder(HW_H265, env) or "libx265"
+    if codec == HW_AV1:
+        # AV1 的软编回退是 libsvtav1（不是 libx264），保证"选了 AV1 就还是 AV1"
+        return resolve_hw_encoder(HW_AV1, env) or "libsvtav1"
     return codec
 
 
 _HW_NAMES = {
     "h264_nvenc", "hevc_nvenc", "h264_qsv", "hevc_qsv", "h264_amf", "hevc_amf",
     "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "hevc_vaapi",
+    "av1_nvenc",
 }
 
 
 def is_hw_encoder(codec: str) -> bool:
     return codec in _HW_NAMES
+
+
+def hw_unusable_reason(sentinel: str, env=None) -> str:
+    """硬件家族挑不出可用编码器时，探测到的原因（人话，如「NVIDIA 驱动过旧」）。
+
+    一次都没探测过、或 ffmpeg 里根本没编这个编码器时返回空串 —— 那时
+    「本机不可用」这种模糊说法反而更准。
+    """
+    for cand in hw_candidates(sentinel):
+        if env is not None and env.encoder_available(cand):
+            return env.unusable_reason(cand)
+    return ""
+
+
+def codec_available(codec: str, env=None) -> tuple[bool, str]:
+    """这个编码器项在本机能不能**真的用上**；不能时给出原因。
+
+    🔴 硬件项必须按**家族**判断，不能拿 `resolve_codec()` 的结果去问 ——
+    挑不出硬件时它就是返回 "libx264"（静默回退软编），照它判断会把用不了的
+    「H.265 硬件加速」显示成「可用」，用户选了以为在跑硬件，实际出片慢好几倍。
+
+    没有 ffmpeg 时一律返回可用（与色深下拉同一约定）：交给编码时报错，
+    别把整个下拉灰成一片。
+    """
+    if codec in ("copy", "none") or env is None or not getattr(env, "ready", False):
+        return True, ""
+    if codec in _HW_TABLE:
+        if resolve_hw_encoder(codec, env):
+            return True, ""
+        return False, hw_unusable_reason(codec, env) or "本机没有可用的硬件编码器"
+    ok = env.encoder_usable(codec)
+    return ok, "" if ok else (env.unusable_reason(codec) or "本机不可用")
 
 
 def codec_labels(env=None) -> list[tuple[str, str]]:
@@ -166,7 +212,27 @@ def codec_labels(env=None) -> list[tuple[str, str]]:
             label = HW_ENCODER_LABEL.get(real, real)
             out.append((sentinel, f"{family} 硬件加速（{label}）"))
         else:
-            out.append((sentinel, f"{family} 硬件加速（本机不可用，将回退软编）"))
+            # 不可用时把探测到的原因带上（如"NVIDIA 驱动过旧"），
+            # 否则用户只能看到"不可用"，不知道该做什么。
+            # 🔴 原因不要自己带前导逗号：外面已经有一对括号了
+            # （踩过：拼出「H.264 硬件加速（，NVIDIA 驱动过旧）」，那个逗号很显眼）
+            detail = hw_unusable_reason(sentinel, env) or "本机不可用，将回退软编"
+            out.append((sentinel, f"{family} 硬件加速（{detail}）"))
+
+    # AV1 硬件加速：只有 RTX 40 系起的 N 卡有 AV1 编码单元。
+    # 软件列表里已有 AV1 软编（libsvtav1），这里加的是"快一个数量级"的硬编。
+    real = resolve_hw_encoder(HW_AV1, env)
+    if real:
+        label = HW_ENCODER_LABEL.get(real, real)
+        out.append((HW_AV1, f"AV1 硬件加速（{label} · 最快）"))
+    else:
+        detail = hw_unusable_reason(HW_AV1, env) or "本机不可用"
+        out.append((HW_AV1, f"AV1 硬件加速（{detail}）"))
+    # AV1：同画质下比 H.265 再省 36% 左右（实测七段真实素材求交，平均 35.9%），
+    # 且不像 x265 那样随画质提高而衰减。但较新设备才能硬解。
+    # 内置 ffmpeg 带 libsvtav1，始终可提供（软编）。
+    out.insert(2, ("libsvtav1",
+                   "AV1 / SVT-AV1（体积最小，需较新设备播放）"))
     out.append(("copy", "不重新编码（仅换容器）"))
     return out
 
@@ -192,22 +258,54 @@ PRESETS: list[Preset] = [
         key="quality",
         name="高质量收藏",
         tagline="画质优先",
-        detail="H.265 · CRF 20 · slow，比 H.264 再省三成体积",
+        # 容器用 MP4 而不是 MKV：MKV 浏览器（<video> / MSE）根本不认，
+        # 想「自己存着也想偶尔在网页里放一下」就必须是 MP4 + hvc1。
+        # ⚠️ 这里的压缩率说法被实测改过两次，别凭印象再改回去：
+        # 原来无条件写「省三成」→ 实测（2026-11-12，七段真实素材同 SSIM 求交）
+        # 只有 13~42%，平均 27.7%，而且**画质越高省得越少**：
+        #   大运动01: 31.3%(低) → 28.2%(中) → 8.0%(高)
+        #   换装:     21.3%      → 10.5%      → 8.4%
+        #   实拍01:   41.5%      → 32.5%      → 25.0%
+        # 本预设是 CRF 20（高画质段），恰好踩在最不准的位置，所以文案
+        # 必须把衰减说出来，不能只写"省两三成"。
+        detail="H.265 · CRF 20 · slow · 比 H.264 省一到三成，画质越高省得越少；"
+               "网页可能播不了",
         video=_v(codec="libx265", crf=20, preset="slow", audio_codec="aac",
-                 audio_bitrate_kbps=192, container=Container.MKV),
+                 audio_bitrate_kbps=192, container=Container.MP4),
     ),
     Preset(
         key="tiny",
         name="极限小体积",
-        tagline="存档 / 传网盘",
-        detail="H.265 · CRF 28 · veryslow · 压到最小，编码较慢",
+        tagline="体积最小",
+        detail="AV1 · CRF 38 · preset 4 · 10bit · 同等画质下比 H.265 更小、"
+               "编码更快（SVT-AV1 并行优化）；需较新设备播放",
+        video=_v(codec="libsvtav1", crf=38, preset="slower",
+                 audio_codec="libopus", audio_bitrate_kbps=96,
+                 container=Container.MKV, pix_fmt="yuv420p10le"),
+    ),
+    Preset(
+        key="hevc_compat",
+        # 🔴 名称 + 标签必须塞进卡片内宽（168-22=146px）：
+        # 「H.265 兼容压缩」(107px) + 「老设备友好」(67px) 要 182px，
+        # 名称会被省略成「H.265 …」——标题直接看不见。现在 130px，余 16px。
+        # 改这两行前先跑 tests/preset_chip_test.py。
+        name="H.265 兼容",
+        # 标签不能写「老设备」—— 那恰好是 H.265 最播不了的地方（见下）。
+        # 「省体积」才是它相对 H.264 的真实优势，且宽 45px 放得下。
+        tagline="省体积",
+        # 🔴 这里曾经写「老设备也能硬解」，是**错的**（2026-11-12 核实）：
+        # 浏览器不做 HEVC 软解，只把解码委托给系统/GPU，链路一断就黑屏 ——
+        # 老设备恰恰是 H.265 最播不了的地方。真正的"老设备友好"是 H.264。
+        # 这个预设现在的定位是：同画质比 H.264 小、又比 AV1 播得开（新设备）。
+        detail="H.265 · CRF 28 · veryslow · 比 AV1 播得开（2018 年后设备基本能硬解），"
+               "体积比 H.264 小；老设备和网页仍可能播不了",
         video=_v(codec="libx265", crf=28, preset="veryslow", audio_codec="aac",
-                 audio_bitrate_kbps=96, container=Container.MKV),
+                 audio_bitrate_kbps=96, container=Container.MP4),
     ),
     Preset(
         key="social",
         name="社交平台 720p",
-        tagline="微信 / 聊群",
+        tagline="微信",
         detail="H.264 · CRF 25 · 720p，微信直接发送不卡顿",
         video=_v(codec="libx264", crf=25, preset="fast", scale_height=720,
                  audio_codec="aac", audio_bitrate_kbps=96),
@@ -216,7 +314,8 @@ PRESETS: list[Preset] = [
         key="hw",
         name="硬件加速",
         tagline="最快出片",
-        detail="用显卡 / 芯片编码，速度最快，体积略大（自动挑本机真正可用的硬件）",
+        detail="H.264 硬件编码（自动挑 NVENC/QSV/AMF 里可用的），出片最快；"
+               "要同体积画质更好，可手选 AV1 / H.265 的硬件加速",
         video=_v(codec=HW_H264, rate_mode=RateMode.BITRATE,
                  bitrate_kbps=6000, audio_codec="aac", audio_bitrate_kbps=128),
     ),
@@ -262,7 +361,32 @@ SCALE_OPTIONS = [
     (1080, "1080p (全高清)"),
     (720, "720p (高清)"),
     (480, "480p (标清)"),
+    (360, "360p (流畅)"),
+    (240, "240p (极小体积)"),
 ]
+
+# 色深：10bit 对 8bit 源也能减少色带（实测纯渐变画面灰阶级数 34→40 级）。
+# 注意收益量级：同体积下真实素材只有 ΔSSIM +0.0003~0.0009，
+# 所以只作为可选项，不进任何预设的默认值（AV1 预设除外）。
+PIX_FMT_OPTIONS = [
+    ("", "8bit（默认）"),
+    ("yuv420p10le", "10bit（色带更少）"),
+]
+
+
+def ten_bit_note(codec: str) -> str:
+    """10 位色深在当前编码器下的**播放**兼容性（与"能不能编"是两件事）。
+
+    H.264 的 10bit 就是 Hi10P —— 到 2026 年仍然没有任何设备能硬解；
+    H.265 / AV1 的 10bit 反而是主流格式。两者混成一句"兼容性稍差"会误导用户。
+    """
+    if codec == "libx264" or codec.startswith("h264_"):
+        return ("H.264 的 10bit 就是 Hi10P：至今没有设备能硬解，手机 / 电视 / "
+                "网页播放器基本解不动，只适合在电脑上软解观看。")
+    if codec == "libvpx-vp9":
+        return ("VP9 的 10bit 是 Profile 2：Chrome / 安卓能解，老设备多数只支持 8bit。")
+    return ("H.265 / AV1 的 10bit 是主流格式：2018 年后的手机、电视、显卡基本都能"
+            "硬解；Windows 自带播放器需另装「HEVC 视频扩展」。")
 
 FPS_OPTIONS = [
     (0.0, "保持原始帧率"),

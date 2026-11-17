@@ -129,19 +129,6 @@ def config_path() -> Path:
     return data_dir() / "config.json"
 
 
-def default_output_dir() -> Path:
-    """默认输出目录：~/Movies/小丸输出（Mac）/ ~/Videos/小丸输出（Win）"""
-    if is_macos():
-        base = Path.home() / "Movies"
-    elif is_windows():
-        base = Path.home() / "Videos"
-    else:
-        base = Path.home() / "Videos"
-    out = base / "小丸输出"
-    out.mkdir(parents=True, exist_ok=True)
-    return out
-
-
 def unique_path(path: Path) -> Path:
     """若目标已存在，追加 _1 / _2 … 避免覆盖。"""
     if not path.exists():
@@ -204,3 +191,16 @@ def safe_stem(path: Path) -> str:
     bad = '<>:"/\\|?*\n\r\t'
     name = "".join("_" if c in bad else c for c in path.stem).strip()
     return name or "output"
+
+
+def resource_path(*parts: str) -> Path:
+    """应用内资源路径（打包后从 _MEIPASS 读，源码运行时从 app/resources 读）。
+
+    放在这里而不是 app/main.py：界面层（侧栏徽标等）也要用，反向 import main 会循环。
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        candidate = Path(base).joinpath("app", "resources", *parts)
+        if candidate.exists():
+            return candidate
+    return Path(__file__).resolve().parents[1] / "resources" / Path(*parts)

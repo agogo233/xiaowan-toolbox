@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .commands import (build_compress_steps, build_downmix_steps,
                        build_extract_audio_steps, build_merge_downmix_steps,
-                       build_remux_steps, resolve_downmix_format)
+                       build_remux_steps, resolve_downmix_format,
+                       _threads_for_one_job)
 from .ffmpeg import MediaInfo, StreamInfo
 from .presets import (LOSSLESS_AUDIO_CODECS, VIDEO_CONTAINERS, Container,
                       DownmixSettings, VideoSettings)
@@ -43,23 +44,31 @@ def make_output_path(cfg, src: Path, ext: str, suffix: str = "",
 
 def build_compress_task(ctx, src: Path, info: MediaInfo | None,
                         settings: VideoSettings, target_size_mb: float = 0.0,
-                        suffix: str | None = None) -> Task:
+                        suffix: str | None = None,
+                        clip: tuple[float, float] | None = None) -> Task:
+    """clip: (起始秒, 时长)，试压用（见 build_compress_steps）。"""
     cfg = ctx.config
     if suffix is None:
         suffix = cfg.filename_suffix
-    dst = make_output_path(cfg, src, settings.container.value, suffix)
+    # force_suffix：试压产物必须带后缀，否则会和正常输出撞名、互相覆盖
+    dst = make_output_path(cfg, src, settings.container.value, suffix,
+                           force_suffix=clip is not None)
 
     work_dir: Path | None = None
     from .presets import RateMode
     if settings.rate_mode in (RateMode.TWOPASS, RateMode.TARGET_SIZE) or target_size_mb > 0:
         work_dir = Path(tempfile.mkdtemp(prefix="xiaowan_2pass_"))
 
+    # 默认不限制线程（见 _threads_for_one_job 的实测结论）
+    threads = _threads_for_one_job(cfg.concurrency)
     steps = build_compress_steps(
         ctx.env, src, dst, settings, info,
-        target_size_mb=target_size_mb, work_dir=work_dir,
+        target_size_mb=target_size_mb, work_dir=work_dir, clip=clip,
+        threads=threads,
     )
     return Task(kind=TaskKind.COMPRESS, src=src, dst=dst, steps=steps,
-                info=info, work_dir=work_dir)
+                info=info, work_dir=work_dir,
+                clip=clip, is_sample=clip is not None, threads=threads)
 
 
 # --------------------------------------------------------------------------- #

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QGridLayout, QHBoxLayout,
                                QSpinBox, QWidget)
 
 from ...core.pipeline import build_remux_task
 from ...core.presets import REMUX_CONTAINERS, Container
 from ...core.utils import VIDEO_EXTS, human_size
-from ..widgets import Card, FileTable, label
+from ..widgets import Card, Combo, FileArea, FileTable, label
 from .shared import ActionBar, OutputRow, Page, make_file_toolbar
 
 AUDIO_MODES = [
@@ -33,17 +33,15 @@ class RemuxPage(Page):
                          "换容器、挑音轨、挂字幕。默认不重新编码，速度极快、画质无损。")
 
         self.table = FileTable(ctx.env_provider, VIDEO_EXTS)
-        card_files = Card()
-        card_files.add(make_file_toolbar(self.table, VIDEO_EXTS))
-        card_files.layout().addWidget(self.table, 1)
+        area_files = FileArea(
+            self.table, make_file_toolbar(self.table, VIDEO_EXTS))
 
         # 底部操作栏要先创建：参数区在构建过程中就会回调 _update_hint
-        self.bar = ActionBar("开始封装")
+        self.bar = ActionBar("开始封装", OutputRow(ctx))
         self.bar.button.clicked.connect(self._on_start)
 
-        self.root.addWidget(card_files, 1)
+        self.root.addWidget(area_files, 1)
         self.root.addWidget(self._build_params())
-        self.root.addWidget(OutputRow(ctx))
         self.root.addWidget(self.bar)
 
         self.table.filesChanged.connect(self._update_hint)
@@ -54,18 +52,18 @@ class RemuxPage(Page):
         card = Card()
         card.add(label("封装选项", "SectionTitle"))
 
-        self.cmb_container = QComboBox()
+        self.cmb_container = Combo()
         for container, text, desc in REMUX_CONTAINERS:
             self.cmb_container.addItem(f"{text} —— {desc}", container.value)
         self.cmb_container.setCurrentIndex(1)  # 默认 MKV，兼容性最稳
         self.cmb_container.currentIndexChanged.connect(self._on_container_changed)
 
-        self.cmb_audio_mode = QComboBox()
+        self.cmb_audio_mode = Combo()
         for value, text in AUDIO_MODES:
             self.cmb_audio_mode.addItem(text, value)
         self.cmb_audio_mode.currentIndexChanged.connect(self._on_audio_mode_changed)
 
-        self.cmb_audio_codec = QComboBox()
+        self.cmb_audio_codec = Combo()
         for value, text in AUDIO_CODECS:
             self.cmb_audio_codec.addItem(text, value)
         self.cmb_audio_codec.currentIndexChanged.connect(self._on_audio_mode_changed)

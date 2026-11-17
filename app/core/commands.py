@@ -32,8 +32,67 @@ class CommandStep:
         return " ".join(self.args)
 
 
+def _threads_for_one_job(_concurrency: int = 1) -> int | None:
+    """单个任务该用几个编码线程 —— 答案：**不限制，交给 ffmpeg 自己**。
+
+    🔴 这函数曾经返回 `核数 // 并发数`（"别让两个 ffmpeg 各抢满全部核心"），
+    2026-11-16 实测推翻了那个判断，参数保留只为兼容调用方，永远返回 None。
+
+    为什么"按并发分线程"是错的（实测，32 核 / 1080p/20s / x264 medium）：
+
+        并发 2：各不限 4.3s / CPU 均 93%
+                各 16   5.3s / CPU 均 73%   ← **慢 23%**
+        并发 4：各不限 8.4s / 各 8 10.2s   ← 慢 22%
+        并发 8：各不限 16.6s / 各 4 17.9s  ← 慢 8%
+        并发 1：各不限 1.4s / 各 32 1.5s   ← 慢 7%
+
+    **每一档都更慢**，而且 CPU 占用并没降多少（93%→73%）。根因：
+    操作系统调度器本来就擅长处理线程"超额订阅"，而人为砍线程会让每个
+    ffmpeg 的并行流水线变浅 —— 读、解码、滤镜、编码、写盘这些阶段
+    需要足够多的线程才能填满，线程一少就出现流水线气泡。
+
+    当初的判断错在**测量设计**：只测了单任务（那里 1.4s vs 1.5s 看着
+    "差不多"），没测真正的并发场景。
+
+    结论：线程数、并发数、进程优先级**三者正交**，不该互相耦联 ——
+      · 线程数：ffmpeg 自动（它比我们更懂自己的流水线）
+      · 并发数：用户设（实测并发 2 相对串行 1.15× 加速，是真实收益）
+      · 优先级：用户的"后台运行"开关（不影响吞吐）
+    """
+    return None
+
+
 def _base(env: FFmpegEnv) -> list[str]:
+    """ffmpeg 前缀参数（`-i` 之前那一段）。"""
     return [env.ffmpeg or "ffmpeg", "-hide_banner", "-nostdin", "-y"]
+
+
+def _thread_args(threads: int | None,
+                 codec: str | None = None) -> list[str]:
+    """限制**编码**线程数的参数 —— 必须放在 `-i` 之后。
+
+    🔴 放 `-i` 之前完全无效（实测）：那时它是"解码线程数"，x264 的编码
+    线程数仍由它自己按核数决定。同一份素材、同样的值：
+      · `-threads 16` 放 -i 前：1.6s / CPU 峰 99%（和什么都不加一样）
+      · `-threads 16` 放 -i 后：2.2s / CPU 峰 52%（真的降下来了）
+      · `-threads 2`  放 -i 后：7.0s / CPU 峰 37%（慢得多，但确实省）
+
+    ⚠️ 对某些编码器**静默无效**，传之前要看 codec：
+      · **SVT-AV1**：`-threads` 完全不生效。实测 不限/2/16 三种取值下
+        `Level of Parallelism` 都是 6（它按分辨率自己算，1080p→6），
+        preset 也改不了。它有自己的并行模型。
+      · **NVENC / QSV / AMF 等硬件编码**：计算在 GPU 上，CPU 侧几乎不并行
+        （实测 NVENC 并发 2 只占 42% CPU，限不限线程耗时完全一样 1.4s/1.4s）。
+      这两种情况下加了也是空操作，不如不加 —— 免得用户/日志以为生效了。
+    """
+    if not threads or threads <= 0:
+        return []
+    if codec:
+        low = codec.lower()
+        if low == "libsvtav1" or any(
+                k in low for k in ("nvenc", "qsv", "amf", "videotoolbox", "vaapi")):
+            return []
+    return ["-threads", str(threads)]
 
 
 def _tail() -> list[str]:
@@ -81,6 +140,16 @@ _AMF_QUALITY = {
 }
 
 
+def _fdk_he_args(audio_codec: str, bitrate_kbps: int) -> list[str]:
+    """libfdk_aac 低码率时切 HE-AAC（≤64k 音质显著优于 LC）。
+
+    其余编码器或高码率返回空。
+    """
+    if audio_codec == "libfdk_aac" and bitrate_kbps <= 64:
+        return ["-profile:a", "aac_he"]
+    return []
+
+
 def _quality_args(codec: str, crf: float) -> list[str]:
     """把统一的『质量值』翻译成该编码器真正的恒定质量参数。
 
@@ -107,8 +176,54 @@ def _quality_args(codec: str, crf: float) -> list[str]:
     return ["-crf", f"{crf:g}"]
 
 
+_SVTAV1_PRESET = {
+    # SVT-AV1 的 preset 只接受 -1~13 的数字；数字越大越快、画质越差。
+    # x264 档位 → SVT 数字：keep it simple，两端对齐（ultrafast=13, veryslow=2）
+    "ultrafast": "13", "superfast": "11", "veryfast": "9", "faster": "8",
+    "fast": "7", "medium": "6", "slow": "5", "slower": "4", "veryslow": "2",
+}
+
+
+# 能用「固定 QP」精确控体积的编码器。
+#
+# 为什么需要：目标体积模式靠两遍 ABR（passlog 统计）算体积，而**硬件编码器
+# 不产生 passlog**（实测 h264_amf / h264_nvenc 的 pass 1 退出码 0、日志 0 字节），
+# 于是"两遍"是假的，体积实测超 1.2~2.4 倍。这类编码器只有走 CQP 才能控体积。
+#
+# 为什么只收这几个：QSV 没有纯 CQP（只有 min/max_qp 配合 global_quality），
+# VideoToolbox 只有 -q:v 的 qscale（与 QP 不是同一刻度）。它们不在名单里，
+# 目标体积页会直接拒绝（见 size_service.build_size_task）。
+# av1_nvenc 已实测支持 constqp 与 10bit（RTX 5060 Ti / 驱动 581.29）。
+CQP_ENCODERS = {"h264_amf", "hevc_amf", "h264_nvenc", "hevc_nvenc",
+                "av1_nvenc"}
+
+
+def can_cqp(codec: str) -> bool:
+    return codec in CQP_ENCODERS
+
+
+def cqp_args(codec: str, qp: int) -> list[str]:
+    """固定 QP 参数。各家的写法与量程完全不同（实测）：
+
+    AMF      : -rc cqp -qp_i N -qp_p N          （QP 0~51）
+    NVENC    : -rc constqp -qp N                （H.264/HEVC 0~51）
+    AV1 NVENC: -rc constqp -qp N                （**0~255**！QP 51 在 1708x1212
+               的真实素材上仍产出 3.8 倍于目标的体积 —— AV1 的量化刻度
+               比 H.264 平得多，上限钳到 51 会直接让修正循环撞墙）
+    """
+    max_qp = 255 if codec == "av1_nvenc" else 51
+    q = int(round(min(max(qp, 0), max_qp)))
+    if codec.endswith("_amf"):
+        return ["-rc", "cqp", "-qp_i", str(q), "-qp_p", str(q)]
+    if codec.endswith("_nvenc"):
+        return ["-rc", "constqp", "-qp", str(q)]
+    raise ValueError(f"{codec} 不支持固定 QP 模式")
+
+
 def _speed_args(codec: str, preset: str) -> list[str]:
     """把统一的『速度档』翻译成该编码器支持的写法。"""
+    if codec == "libsvtav1":
+        return ["-preset", _SVTAV1_PRESET.get(preset, "6")]
     if codec.endswith("_videotoolbox"):
         # VideoToolbox 只有「是否画质优先」这一个开关
         return ["-allow_sw", "1", "-prio_speed", "0"] if preset in (
@@ -125,11 +240,73 @@ def _speed_args(codec: str, preset: str) -> list[str]:
 _HEVC_ENCODERS = {"libx265", "hevc_nvenc", "hevc_qsv", "hevc_amf",
                   "hevc_videotoolbox", "hevc_vaapi", HW_H265}
 
+# HEVC 要写 `hvc1` 而不是默认的 `hev1` 的容器：Safari / AVFoundation 和
+# MSE（浏览器 <source> 走的那条路）都只认 hvc1。实测 ffmpeg 对 MP4 和 MOV
+# 都默认写 hev1 —— 原来只给 MP4 加，选 MOV 就会得到 Mac 打不开的文件。
+_HEVC_TAG_CONTAINERS = {Container.MP4, Container.MOV}
+
 
 def _is_hw_like(codec: str) -> bool:
     """是否（可能是）硬件编码器 —— 体积估算时用，拿不到 env 也能判断。"""
     return codec in (HW_H264, HW_H265) or any(
         k in codec for k in ("nvenc", "qsv", "amf", "videotoolbox", "vaapi"))
+
+
+# 试压（只压一段看效果）的时长。
+# 20 秒是**默认值**，不是固定值 —— 用户可改（见 SAMPLE_SECONDS_OPTIONS）：
+#   · 5 秒：只想快速确认"参数没搞错"，最省时间
+#   · 20 秒：默认。够长到能反映全片难度，也够短到不用等
+#   · 60 秒：要更准的体积结论（两遍 ABR 的分析窗口越短越不准）
+SAMPLE_SECONDS = 20
+#: 下拉里可选的时长。别超过 60：再长就不叫"快速试"了。
+SAMPLE_SECONDS_OPTIONS = [5, 10, 20, 30, 60]
+
+
+def sample_span(info: MediaInfo | None, seconds: int = SAMPLE_SECONDS,
+                position: str = "middle") -> tuple[float, float]:
+    """试压要截取的那一段：(起始秒, 时长)。返回 (0, 0) 表示不截取。
+
+    🔴 时长会自动收敛到源的实际长度：8 秒的视频传 20 也只能取 8 秒。
+    这也是按钮文案必须动态显示"实际会取多长"的原因 —— 写死"20 秒"
+    在短片上是撒谎（用户报的就是这个问题）。
+
+    默认取**中间**而不是片头：片头往往是黑场/标题/静止画面，压出来又小又好看，
+    完全不能代表全片难度。中间段通常是正片，试压结论才可信。
+    （参考软件提供 首先/中间/最后 三选；这里固定中间 —— 另两个选项对"试压"
+    这个用途没有意义，只是给"我只想要那一段"的剪辑场景用的，而本功能不做那件事。）
+    """
+    if info is None or not info.duration or info.duration <= 0:
+        return 0.0, 0.0
+    dur = min(float(seconds), float(info.duration))
+    if dur <= 0:
+        return 0.0, 0.0
+    if position == "first":
+        return 0.0, dur
+    if position == "last":
+        return max(0.0, info.duration - dur), dur
+    return max(0.0, (info.duration - dur) / 2.0), dur
+
+
+def truncated_info(info: MediaInfo | None, seconds: int = SAMPLE_SECONDS,
+                   position: str = "middle") -> MediaInfo | None:
+    """返回一个「时长被截断」的 MediaInfo 副本，供试压时算预算/进度。
+
+    🔴 为什么必须截断：下游有两处按 duration 算东西 ——
+      1. 目标体积模式按 duration 反推码率（`compute_video_bitrate_kbps`）。
+         若仍用完整时长，20 秒的样本会按「压完整片」的码率去压，
+         体积必然对不上，看不出真实效果。
+      2. 进度条与 ETA 用 `task.duration` 做分母。样本只有 20 秒，
+         分母若还是 900 秒，进度条永远走不到头。
+    截断后两处自动正确，不需要在别处加特例。
+    """
+    if info is None:
+        return None
+    _ss, dur = sample_span(info, seconds, position)
+    if dur <= 0:
+        return info
+    from dataclasses import replace
+
+    return replace(info, duration=dur)
 
 
 def build_compress_steps(
@@ -140,7 +317,20 @@ def build_compress_steps(
     info: MediaInfo | None = None,
     target_size_mb: float = 0.0,
     work_dir: Path | None = None,
+    clip: tuple[float, float] | None = None,
+    threads: int | None = None,
 ) -> list[CommandStep]:
+    """threads: 编码线程数上限（None = 交给 ffmpeg 自动）。
+    默认 None = 交给 ffmpeg 自动。**别按并发数手工均分** —— 实测那是
+    负优化（每档并发都更慢 8~23%），理由见 _threads_for_one_job()。
+
+    clip: (起始秒, 时长)。给试压用 —— 只编码这一小段，其余参数不变。
+
+    ⚠️ 截取放在 `-i` **之前**（输入侧 seek）。这样 ffmpeg 直接跳到关键帧，
+    不会先解码前面的内容再丢弃 —— 试压要的就是"快"。
+    输入侧 seek 的代价是起点可能落在关键帧上（略早几十毫秒），
+    对"看画质/估体积"没有影响。
+    """
     steps: list[CommandStep] = []
     duration = info.duration if info else 0.0
     codec = resolve_codec(s.codec, env)     # auto_hw → 本机真正可用的硬件编码器
@@ -179,8 +369,8 @@ def build_compress_steps(
 
         if s.pix_fmt:
             v_args += ["-pix_fmt", s.pix_fmt]
-        if codec in _HEVC_ENCODERS and s.container == Container.MP4:
-            v_args += ["-tag:v", "hvc1"]  # 否则 macOS 播放器不认
+        if codec in _HEVC_ENCODERS and s.container in _HEVC_TAG_CONTAINERS:
+            v_args += ["-tag:v", "hvc1"]  # 否则 macOS / Safari 不认
 
     # --- 缩放 / 帧率 ---
     filters: list[str] = []
@@ -197,7 +387,8 @@ def build_compress_steps(
     elif s.audio_codec == "copy":
         a_args += ["-c:a", "copy"]
     else:
-        a_args += ["-c:a", s.audio_codec, "-b:a", f"{s.audio_bitrate_kbps}k"]
+        a_args += (["-c:a", s.audio_codec, "-b:a", f"{s.audio_bitrate_kbps}k"]
+                   + _fdk_he_args(s.audio_codec, s.audio_bitrate_kbps))
         if s.audio_channels:
             a_args += ["-ac", str(s.audio_channels)]
 
@@ -209,12 +400,27 @@ def build_compress_steps(
         a_args = (["-an"] if s.audio_codec == "none"
                   else ["-c:a", "libopus", "-b:a", f"{s.audio_bitrate_kbps}k"])
     elif s.container == Container.MP4 and s.faststart:
-        m_args += ["-movflags", "+faststart"]
+        flags = "+faststart"
+        # use_metadata_tags：把拍摄日期/设备/GPS 写进 MP4 的 iTunes 风格 tag。
+        # 光 -map_metadata 0 只映射 QuickTime 原生键，iPhone 的 creation_date/GPS
+        # 走的是 iTunes atom，不写这个 flag 会让相册 App 认不出拍摄时间。
+        if s.keep_metadata:
+            flags += "+use_metadata_tags"
+        m_args += ["-movflags", flags]
 
     maps = ["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0"]
 
     def _out_args(extra: list[str]) -> list[str]:
-        args = _base(env) + ["-i", str(src)]
+        args = _base(env)
+        clip_ss, clip_dur = clip if clip else (0.0, 0.0)
+        if clip_ss > 0:
+            # 输入侧 seek：不写 -accurate_seek，让 ffmpeg 直接跳关键帧（快）
+            args += ["-ss", f"{clip_ss:.3f}"]
+        args += ["-i", str(src)]
+        if clip_dur > 0:
+            args += ["-t", f"{clip_dur:.3f}"]
+        # 线程数必须在 -i 之后才作用于编码器（见 _thread_args）
+        args += _thread_args(threads, codec)
         args += maps
         args += v_args + a_args + m_args + s.extra_args
         if filters:
@@ -231,9 +437,11 @@ def build_compress_steps(
         wd.mkdir(parents=True, exist_ok=True)
         log = wd / f"{dst.stem}_pass"
         null_out = "NUL" if _is_windows() else "/dev/null"
-        p1 = _base(env) + ["-i", str(src)] + maps + v_args + [
-            "-pass", "1", "-passlogfile", str(log), "-an"
-        ]
+        # 🔴 第一遍带上音频（理由同 size_service：新版 ffmpeg 的 passlog
+        # 按输出流分文件，pass 2 会读音频流的日志，pass 1 -an 会导致缺文件）
+        p1 = (_base(env) + ["-i", str(src)] + _thread_args(threads, codec)
+              + maps + v_args
+              + ["-pass", "1", "-passlogfile", str(log)] + a_args)
         if filters:
             p1 += ["-vf", ",".join(filters)]
         p1 += ["-f", "null"] + _tail() + [null_out]
@@ -353,7 +561,7 @@ def build_remux_steps(
         args += ["-metadata", f"{k}={v}"]
 
     if container == Container.MP4 and faststart:
-        args += ["-movflags", "+faststart"]
+        args += ["-movflags", "+faststart+use_metadata_tags"]
 
     args += _tail() + [str(dst)]
     return [CommandStep(args, 1.0, "封装中")]
@@ -826,7 +1034,7 @@ def build_downmix_steps(
 
     args += ["-map_metadata", "0"]
     if container == "mp4" and faststart:
-        args += ["-movflags", "+faststart"]
+        args += ["-movflags", "+faststart+use_metadata_tags"]
 
     args += _tail() + [str(dst)]
     label = "下混为立体声" if s.target_channels == 2 else "下混为单声道"
