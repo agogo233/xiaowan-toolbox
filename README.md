@@ -11,18 +11,42 @@ Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS /
 
 ![压缩页](_shots/1_压缩.png)
 
+![压缩页](_shots/2_压缩.png)
+
 ## 下载安装
 
 | 平台 | 怎么装 |
 | --- | --- |
-| **Windows** | 下载 [`XiaoWanToolbox-2.0.0.exe`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest)（约 208 MB，单文件免安装）双击即用。自带 ffmpeg，装完直接能用 |
-| **macOS** | 官方不提供现成 `.app`，需要在本机跑一次构建（约 2–5 分钟），见下方 [macOS 章节](#macos)。产出的 `.app` 自带 ffmpeg，可随意拷给别人 |
+| **Windows** | 下载 [`XiaoWanToolbox-2.0.0.exe`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest)（约 37 MB，单文件免安装）双击即用。**不含 ffmpeg**，首次使用前需自行安装（见下方 [ffmpeg 说明](#ffmpeg-从哪来)） |
+| **macOS** | 下载 [`XiaoWanToolbox-2.0.0-mac.zip`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest)，解压后双击「打包小丸工具箱.command」生成 `.app`（约 3–8 分钟，pip 全程离线）。**不含 ffmpeg**，需要本机已装（`brew install ffmpeg`） |
 
 全部版本与下载：<https://github.com/axutongxue/xiaowan-toolbox/releases>
 
-> 🔴 **发布包必须用英文名**（如 `XiaoWanToolbox-2.0.0.exe`）：GitHub Release 会剥掉
-> 资产名里的非 ASCII 字符，中文名 `小丸工具箱-2.0.0.exe` 会被削成 `-2.0.0-.exe`。
-> 程序本身的界面、窗口标题、安装后的快捷方式全是中文，不受影响。
+## ffmpeg 从哪来
+
+**本项目的发布包不含 ffmpeg**（它体积太大：单文件 219 MB，会让 exe 从 37 MB 涨到 208 MB）。
+程序启动时按下面的顺序自动找，找到就用：
+
+1. 「设置」页手动指定的路径
+2. 环境变量 `XIAOWAN_FFMPEG` / `XIAOWAN_FFPROBE`
+3. **程序目录下的 `bin/ffmpeg`**（想内置的话把文件放这儿再打包即可）
+4. 系统 `PATH`
+5. **macOS 常见安装位置**：`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`
+   （Finder 双击 .app 时 PATH 很窄，所以这几个目录是硬编码查找的）
+6. `imageio-ffmpeg` 包自带的静态 ffmpeg（兜底，仅 ffmpeg 本体）
+
+**没找到也不会崩**：侧栏会显示「● 未找到 ffmpeg」，点进「设置」即可手动指定路径。
+
+安装方式：
+
+| 平台 | 命令 |
+| --- | --- |
+| Windows | 从 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 或 [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) 下 `ffmpeg.exe` / `ffprobe.exe`，放进任意目录并加入 `PATH`，或在「设置」里指定 |
+| macOS | `brew install ffmpeg` |
+| Linux | `sudo apt install ffmpeg`（或发行版对应命令）|
+
+> 需要 **ffprobe** 才能快速读取媒体信息；只有 ffmpeg 时会降级用 `ffmpeg -i` 解析，
+> 功能不变，只是首次扫描大文件稍慢。Homebrew / 官方构建通常两者都有。
 
 ## 功能
 
@@ -42,8 +66,8 @@ Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS /
 
 ### 方式一：单文件 exe（推荐）
 
-下载 `小丸工具箱-2.0.0.exe`（约 208 MB，单文件免安装）双击即用，自带 ffmpeg。
-每次启动会先解压内置 ffmpeg，首次启动稍慢几秒（之后有缓存）。
+下载 `XiaoWanToolbox-2.0.0.exe`（约 37 MB，单文件免安装）双击即用。
+**不含 ffmpeg**，需要本机已安装（见 [ffmpeg 从哪来](#ffmpeg-从哪来)）。
 
 ### 方式二：安装程序（备选）
 
@@ -63,7 +87,8 @@ Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS /
 ### 方式二：目录式（便携）
 
 `python packaging\build_windows.py --onedir` 打出 `dist\小丸工具箱\` 目录，
-启动更快（不用每次解压）；整个文件夹拷给别人也能直接用。
+启动更快（不用每次解压）。若打包时 `bin\ffmpeg.exe` 在场，整个文件夹拷给别人
+也能直接用；否则对方同样需要自己装 ffmpeg。
 
 ### 从源码运行
 
@@ -103,7 +128,6 @@ ISCC.exe packaging\xiaowan_setup.iss
 ## macOS
 
 macOS 上不提供现成的 `.app`（未做 Apple 公证，跨机分发体验不好），需要**在本机跑一次构建**。
-构建产物 `小丸工具箱.app` 自带 ffmpeg，之后可以随意拷到别的 Mac 上。
 
 ### 方式一：离线打包 zip（推荐）
 
@@ -115,9 +139,14 @@ cd ~/Downloads/xiaowan-toolbox    # 换成你实际解压的位置
 bash 打包小丸工具箱.command
 ```
 
-全程不用联网 —— 包里已预置 mac 版 ffmpeg/ffprobe（arm64 + x86_64 各一份）
-和全部 Python 依赖 wheel。约 3~8 分钟后得到 `dist/小丸工具箱.app` 和 `dist/小丸工具箱.zip`。
-唯一前提是本机有 Python 3.10+（macOS 12.3+ 自带 `python3` 通常够用）。
+**pip 全程不联网** —— 包里预置了全部 Python 依赖 wheel（约 179 MB，含两个架构的
+imageio-ffmpeg）。约 3~8 分钟后得到 `dist/小丸工具箱.app` 和 `dist/小丸工具箱.zip`。
+
+前提（两条）：
+
+1. 本机有 Python 3.10+（macOS 12.3+ 自带 `python3` 通常够用）
+2. 本机有 ffmpeg：`brew install ffmpeg` —— **发布包不含 ffmpeg**，
+   `.app` 运行时也会自己去 Homebrew / PATH / 设置页找，所以装一次两边都够用
 
 ### 方式二：源码构建（会自己装 Homebrew 的 ffmpeg）
 
@@ -171,13 +200,16 @@ bash packaging/build_macos.sh --dmg    # 顺便生成 dist/小丸工具箱.dmg
 复制进 `bin/` → 用 `sips`+`iconutil` 生成应用图标 → PyInstaller 打包 → 本地临时签名。
 
 完成后把 `dist/小丸工具箱.app` 拖进「应用程序」文件夹即可。
-**这个 .app 里已经带了 ffmpeg，拷到没装过 Homebrew 的 Mac 上也能直接跑。**
+
+> **两种 mac 构建方式的区别**：
+> `build_macos.sh`（本节）默认**把 ffmpeg 复制进 .app**（`.app` 约 165 MB，拷给别人能直接用）；
+> 加 `--no-ffmpeg` 则与上面「方式一」的 `.command` 一致 —— 不带 ffmpeg，靠运行时检测。
 
 构建常见卡点：
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
-| `未找到 ffmpeg` 并退出 | 忘了 `brew install ffmpeg`；或想跳过内置：`bash packaging/build_macos.sh --no-ffmpeg`（那台机器要自己装 ffmpeg） |
+| `未找到 ffmpeg` 并退出 | 这是 `build_macos.sh`（默认会内置 ffmpeg）的报错：`brew install ffmpeg`，或加 `--no-ffmpeg` 改成不内置<br>（用 `打包小丸工具箱.command` 时不会报错退出，只会警告） |
 | `command not found: python3` | 先跑 `xcode-select --install` |
 | 卡在 `pip install` | 网络问题，可换源：`export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` |
 | `sips` / `iconutil` 报错 | 这两个是 macOS 自带工具，报错一般是上一步的 `icon.png` 没生成，重跑一次即可（图标本来也不是必需） |
