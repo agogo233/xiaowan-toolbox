@@ -1,0 +1,170 @@
+# 自动构建 Windows 产物（便携 zip + Inno Setup 安装包）。
+#
+# 触发：
+#   · push 到 main        —— 日常构建验证，只传 artifact，不发 Release
+#   · push tag v*.*.*     —— 正式发布：校验版本号一致后，产物挂到该 tag 的 Release
+#   · workflow_dispatch   —— 手动试跑，行为同 push 到 main
+#
+# ffmpeg 来源：gyan.dev（ffmpeg.org 官方下载页列出的 Windows 构建源）在 GitHub
+# 的官方镜像 GyanD/codexffmpeg，固定到具体版本 tag；下载后做 SHA-256 双重校验
+# （workflow 内硬编码预期值 + GitHub API 的资产 digest 互验），升级版本时需
+# 同步更新下面两个 env。
+#
+# 产物命名：
+#   tag 构建为 XiaoWanToolbox-<版本>-portable-win64.zip / -Setup.exe；
+#   push / 手动构建额外带短 SHA 后缀，便于区分每次提交。
+
+name: build-release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+env:
+  FFMPEG_VERSION: '9.0.2'
+  # ffmpeg-9.0.2-essentials_build.7z 的 SHA-256（与 GitHub 资产 digest 一致）
+  FFMPEG_SHA256: '4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      - name: Resolve version (tag must match app/__init__.py)
+        id: ver
+        run: |
+          $ver = (python -c "from app import __version__; print(__version__)").Trim()
+          if (-not $ver) { Write-Error "无法读取 app/__init__.py 的 __version__"; exit 1 }
+          $suffix = ''
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($tag -ne $ver) {
+              Write-Error "tag 版本 $tag 与 app/__init__.py 的 __version__ $ver 不一致"
+              exit 1
+            }
+          } else {
+            $suffix = '-' + $env:GITHUB_SHA.Substring(0, 7)
+          }
+          Add-Content $env:GITHUB_OUTPUT "VERSION=$ver"
+          Add-Content $env:GITHUB_OUTPUT "SUFFIX=$suffix"
+
+      - name: Download ffmpeg and verify sha256
+        run: |
+          $assetName = "ffmpeg-$($env:FFMPEG_VERSION)-essentials_build.7z"
+          $rel = gh api "repos/GyanD/codexffmpeg/releases/tags/$($env:FFMPEG_VERSION)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { Write-Error '查询 GyanD/codexffmpeg Release 失败'; exit 1 }
+          $asset = $rel.assets | Where-Object { $_.name -eq $assetName }
+          if (-not $asset) { Write-Error "找不到 Release 资产 $assetName"; exit 1 }
+          $apiDigest = ($asset.digest -replace '^sha256:', '')
+          if ($apiDigest -ne $env:FFMPEG_SHA256) {
+            Write-Error "GitHub 资产 digest 与预期不一致：$apiDigest != $env:FFMPEG_SHA256（资产可能被重新上传，请人工核对后更新 FFMPEG_SHA256）"
+            exit 1
+          }
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile ffmpeg.7z
+          $actual = (Get-FileHash ffmpeg.7z -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:FFMPEG_SHA256) {
+            Write-Error "下载文件 SHA-256 校验失败：$actual"
+            exit 1
+          }
+          Write-Host "ffmpeg $($env:FFMPEG_VERSION) SHA-256 校验通过：$actual"
+          $7z = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $7z) { $7z = 'C:\Program Files\7-Zip\7z.exe' }
+          & $7z x ffmpeg.7z -offmpeg_tmp -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Error '7z 解压失败'; exit 1 }
+          New-Item -ItemType Directory -Force bin | Out-Null
+          $srcExe = Resolve-Path 'ffmpeg_tmp/ffmpeg-*/bin/ffmpeg.exe' -ErrorAction Stop
+          $srcProbe = Resolve-Path 'ffmpeg_tmp/ffmpeg-*/bin/ffprobe.exe' -ErrorAction Stop
+          Copy-Item $srcExe bin/
+          Copy-Item $srcProbe bin/
+          Get-ChildItem bin | ForEach-Object {
+            Write-Host "$($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB"
+          }
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build portable exe
+        run: python packaging/build_windows.py
+
+      - name: Pack portable zip
+        run: |
+          $distDir = (Get-ChildItem dist -Directory | Select-Object -First 1).FullName
+          if (-not $distDir) { Write-Error 'dist 下没有产物目录'; exit 1 }
+          $7z = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $7z) { $7z = 'C:\Program Files\7-Zip\7z.exe' }
+          $zip = "XiaoWanToolbox-$($env:VERSION)$($env:SUFFIX)-portable-win64.zip"
+          & $7z a -tzip $zip "$distDir/*" | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Error '打包 zip 失败'; exit 1 }
+          Write-Host "$zip  $([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB"
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+          SUFFIX: ${{ steps.ver.outputs.SUFFIX }}
+
+      - name: Build installer (Inno Setup)
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { Write-Error 'choco 安装 Inno Setup 失败'; exit 1 }
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { Write-Error '未找到 ISCC.exe'; exit 1 }
+          & $iscc "/DMYAPP_VERSION=$($env:VERSION)" packaging/xiaowan_setup.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error 'Inno Setup 打包失败'; exit 1 }
+          if ($env:SUFFIX) {
+            Get-ChildItem installer_out -Filter *.exe | ForEach-Object {
+              $new = $_.Name -replace '-Setup\.exe$', "$($env:SUFFIX)-Setup.exe"
+              Rename-Item $_.FullName $new
+            }
+          }
+          Get-ChildItem installer_out | ForEach-Object {
+            Write-Host "$($_.Name)  $([math]::Round($_.Length / 1MB, 1)) MB"
+          }
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+          SUFFIX: ${{ steps.ver.outputs.SUFFIX }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: |
+            *.zip
+            installer_out/*.exe
+          if-no-files-found: error
+
+      - name: Upload to release (tag only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --generate-notes
+            if ($LASTEXITCODE -ne 0) { Write-Error "创建 Release $tag 失败"; exit 1 }
+          }
+          $files = @(Get-ChildItem *.zip | ForEach-Object FullName) +
+                   @(Get-ChildItem installer_out -Filter *.exe | ForEach-Object FullName)
+          if ($files.Count -lt 2) { Write-Error '产物不齐（缺 zip 或安装包）'; exit 1 }
+          gh release upload $tag --clobber @files
+          if ($LASTEXITCODE -ne 0) { Write-Error '上传 Release 资产失败'; exit 1 }
+          Write-Host "已上传到 Release $tag：$($files -join ', ')"
+        env:
+          GH_TOKEN: ${{ github.token }}

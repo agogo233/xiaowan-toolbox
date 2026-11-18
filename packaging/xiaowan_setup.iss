@@ -17,7 +17,13 @@
 
 #define MyAppName "小丸工具箱"
 #define MyAppNameEn "XiaoWan Toolbox"
+; 版本号默认与 app/__init__.py 的 __version__ 保持一致；
+; CI 里用 ISCC /DMYAPP_VERSION=x.y.z 注入 tag 对应的版本，避免多处手改漂移
+#ifdef MYAPP_VERSION
+#define MyAppVersion MYAPP_VERSION
+#else
 #define MyAppVersion "1.2.4"
+#endif
 #define MyAppPublisher "52ting"
 #define MyAppURL "https://github.com/52ting/xiaowan-toolbox"
 #define MyAppExeName "小丸工具箱.exe"

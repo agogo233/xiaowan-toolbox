@@ -9,7 +9,7 @@ Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS /
 
 | 平台 | 怎么装 |
 | --- | --- |
-| **Windows** | 下载 [`XiaoWanToolbox-1.2.4-Setup.exe`](https://github.com/52ting/xiaowan-toolbox/releases/latest)（约 47 MB）双击安装。默认装到当前用户目录、**不需要管理员权限**，自动建开始菜单与桌面快捷方式，控制面板里能正常卸载。自带 ffmpeg，装完直接能用 |
+| **Windows** | 下载 [`XiaoWanToolbox-1.2.4-Setup.exe`](https://github.com/52ting/xiaowan-toolbox/releases/latest)（体积以 Release 页资产为准）双击安装。默认装到当前用户目录、**不需要管理员权限**，自动建开始菜单与桌面快捷方式，控制面板里能正常卸载。自带 ffmpeg，装完直接能用 |
 | **macOS** | 官方不提供现成 `.app`，需要在本机跑一次构建（约 2–5 分钟），见下方 [macOS 章节](#macos)。产出的 `.app` 自带 ffmpeg，可随意拷给别人 |
 
 全部版本与下载：<https://github.com/52ting/xiaowan-toolbox/releases>
@@ -83,6 +83,21 @@ ISCC.exe packaging\xiaowan_setup.iss
 需要 [Inno Setup 6](https://jrsoftware.org/isdl.php)（用 winget 装也行：
 `winget install -e --id JRSoftware.InnoSetup`）。
 脚本会读取 `packaging\ChineseSimplified.isl`，中文界面对外可用，无需额外装语言包。
+
+### CI 自动构建（GitHub Actions）
+
+推送到 `main` 分支会自动构建 Windows 便携 zip 与安装包，可在 Actions 对应运行的
+Artifacts 里下载（仅验证构建，不发 Release）；推送 `v*.*.*` 形式的 tag 则会把
+产物挂到该 tag 的 Release，并自动成为「最新版本」。tag 触发时会先校验
+tag 版本与 [`app/__init__.py`](app/__init__.py) 的 `__version__` 一致，不一致直接失败。
+
+CI 内置的 ffmpeg 固定取自 gyan.dev 的 GitHub 镜像
+[`GyanD/codexffmpeg`](https://github.com/GyanD/codexffmpeg)
+（ffmpeg.org 官方下载页列出的 Windows 构建源之一），按具体版本 tag 下载并做
+SHA-256 校验；升级 ffmpeg 只需改
+[`.github/workflows/release.yml`](.github/workflows/release.yml) 顶部的
+`FFMPEG_VERSION` 与 `FFMPEG_SHA256` 两行。该构建为 GPL，对外分发请遵守相应许可，
+见下方[许可说明](#许可说明)。
 
 ---
 
@@ -294,7 +309,7 @@ python tests/verify_exe.py     # 启动打包好的 exe 并截图验证
 
 调用到的第三方组件另有其授权，对外分发时请一并遵守：
 
-- **FFmpeg** —— LGPL 2.1+ 或 GPL 2+/3+（取决于具体构建）。本仓库不分发 ffmpeg 二进制；
-  打包时若放入了 `bin\ffmpeg.exe`，请自行确认所用构建的许可并满足其义务
-  （GPL 构建需提供源码获取方式）。见 <https://ffmpeg.org/legal.html>。
+- **FFmpeg** —— LGPL 2.1+ 或 GPL 2+/3+（取决于具体构建）。本仓库源码不含 ffmpeg
+  二进制；CI 发布产物内置的是 gyan.dev 的 **GPL** 构建，分发时请遵守 GPL 义务
+  （提供源码获取方式：<https://ffmpeg.org/download.html>）。见 <https://ffmpeg.org/legal.html>。
 - **Qt for Python (PySide6)** —— LGPL v3。
