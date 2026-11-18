@@ -40,7 +40,10 @@ def _crash_report(exc: BaseException) -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    sys.stderr.write(text)
+    try:
+        sys.stderr.write(text)
+    except Exception:  # noqa: BLE001
+        pass  # windowed exe 的 stderr 可能不可用，不能让它挡住后面的弹窗
     if sys.platform.startswith("win"):
         try:
             import ctypes
@@ -57,8 +60,13 @@ def main() -> int:
     try:
         from app.main import main as app_main
     except ImportError as exc:  # pragma: no cover
-        print("依赖缺失：", exc)
-        print("请先执行：pip install -r requirements.txt")
+        if getattr(sys, "frozen", False):
+            # 打包后的 exe 里缺模块属于严重缺陷：写 crash.log 并弹窗，
+            # 绝不能静默退出（否则用户双击后"什么都没发生"无从排查）
+            _crash_report(exc)
+        else:
+            print("依赖缺失：", exc)
+            print("请先执行：pip install -r requirements.txt")
         return 1
     try:
         return app_main()
