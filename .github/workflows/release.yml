@@ -26,6 +26,8 @@ env:
   FFMPEG_VERSION: '9.0.2'
   # ffmpeg-9.0.2-essentials_build.7z 的 SHA-256（与 GitHub 资产 digest 一致）
   FFMPEG_SHA256: '4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077'
+  # runner 的 Python stdout 默认是 cp1252，脚本里的中文横幅会 UnicodeEncodeError
+  PYTHONUTF8: '1'
 
 permissions:
   contents: write
