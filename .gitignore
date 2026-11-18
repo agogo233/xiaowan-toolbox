@@ -28,5 +28,7 @@ desktop.ini
 # ---- 本地临时文件 ----
 _*.txt
 _*.py
+# __init__.py 以 下划线开头，会被上面的 _*.py 误伤；包文件必须入库
+!__init__.py
 !_*.gitkeep
 crash.log
