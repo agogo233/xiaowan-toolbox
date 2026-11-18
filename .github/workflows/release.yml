@@ -109,6 +109,44 @@ jobs:
       - name: Build portable exe
         run: python packaging/build_windows.py
 
+      - name: Build debug console exe (bootloader log)
+        id: debugbuild
+        run: |
+          $env:XIAOWAN_CONSOLE_DEBUG = '1'
+          python -m PyInstaller packaging/xiaowan_win.spec --noconfirm --distpath dist_debug --workpath build_debug
+          $exe = 'dist_debug/小丸工具箱/小丸工具箱.exe'
+          if (-not (Test-Path $exe)) { Write-Error 'debug 诊断版构建失败'; exit 1 }
+          Write-Host "debug 诊断版已生成：$exe"
+
+      - name: Smoke test portable exe
+        run: |
+          $exe = 'dist/小丸工具箱/小丸工具箱.exe'
+          if (-not (Test-Path $exe)) { Write-Error "找不到 $exe"; exit 1 }
+          if (-not (Test-Path 'dist/小丸工具箱/_internal')) { Write-Error 'onedir 布局不完整：缺少 _internal'; exit 1 }
+          $p = Start-Process -FilePath $exe -PassThru -WorkingDirectory 'dist/小丸工具箱'
+          Start-Sleep -Seconds 12
+          # crash.log 由 run.py 的 _crash_report 经 data_dir() 写到 %APPDATA%\XiaoWanToolbox\
+          $log = Join-Path $env:APPDATA 'XiaoWanToolbox/crash.log'
+          $fail = ''
+          if ($p.HasExited) {
+            $fail = "进程启动后 12 秒内退出，退出码 $($p.ExitCode)（若为 -1073740791 即 0xC0000409 原生 fail-fast）"
+          } elseif (Test-Path $log) {
+            $fail = '进程仍存活但已生成 crash.log（启动失败弹窗模态阻塞中）'
+            Stop-Process -Id $p.Id -Force
+          }
+          if ($fail) {
+            if (Test-Path $log) {
+              Write-Host '----- crash.log（前 40 行）-----'
+              Get-Content $log -Encoding UTF8 | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
+            } else {
+              Write-Host '（无 crash.log：原生层崩溃，以退出码为准）'
+            }
+            Write-Error "启动冒烟测试失败：$fail"
+            exit 1
+          }
+          Write-Host '启动冒烟测试通过：进程存活且无 crash.log'
+          Stop-Process -Id $p.Id -Force
+
       - name: Pack portable zip
         run: |
           $distDir = (Get-ChildItem dist -Directory | Select-Object -First 1).FullName
@@ -156,6 +194,15 @@ jobs:
         with:
           name: windows-installer
           path: installer_out/*.exe
+          if-no-files-found: error
+
+      # 冒烟测试失败时也要拿到诊断版：只要 debug 构建成功就上传
+      - name: Upload artifact (debug console)
+        if: always() && steps.debugbuild.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-debug-console
+          path: dist_debug/小丸工具箱
           if-no-files-found: error
 
       - name: Upload to release (tag only)

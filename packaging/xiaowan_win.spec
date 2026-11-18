@@ -12,9 +12,16 @@
 实现"开箱即用、无需另外安装 ffmpeg"。
 """
 
+import os
 from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve().parent          # packaging/ 的上一级
+
+# 诊断模式：XIAOWAN_CONSOLE_DEBUG=1 时构建「带控制台 + bootloader 调试日志」的版本，
+# 用于排查“双击没反应”一类启动问题（CI 里的 windows-debug-console artifact）。
+# 该版本在 cmd 里运行会把 PyInstaller 每一步（找 Python DLL / 加载 PYZ / 初始化 /
+# import 脚本）的进度打到控制台，死在哪一步一目了然。
+DEBUG_CONSOLE = os.environ.get("XIAOWAN_CONSOLE_DEBUG") == "1"
 bin_dir = ROOT / "bin"
 ffmpeg = bin_dir / "ffmpeg.exe"
 ffprobe = bin_dir / "ffprobe.exe"
@@ -64,11 +71,11 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="小丸工具箱",
-    debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,                      # 关键：不弹黑色命令行窗口
+    console=DEBUG_CONSOLE,              # 默认无控制台（不弹黑色命令行窗口）；诊断模式开启
+    debug=DEBUG_CONSOLE,                # 诊断模式：bootloader 调试日志打到控制台
     disable_windowed_traceback=False,
     icon=str(ico) if ico.is_file() else None,
 )
