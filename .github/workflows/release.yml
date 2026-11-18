@@ -144,13 +144,18 @@ jobs:
           VERSION: ${{ steps.ver.outputs.VERSION }}
           SUFFIX: ${{ steps.ver.outputs.SUFFIX }}
 
-      - name: Upload artifacts
+      - name: Upload artifact (portable dir)
         uses: actions/upload-artifact@v4
         with:
-          name: windows-dist
-          path: |
-            *.zip
-            installer_out/*.exe
+          name: XiaoWanToolbox-${{ steps.ver.outputs.VERSION }}${{ steps.ver.outputs.SUFFIX }}-portable-win64
+          path: dist/小丸工具箱
+          if-no-files-found: error
+
+      - name: Upload artifact (installer)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: installer_out/*.exe
           if-no-files-found: error
 
       - name: Upload to release (tag only)
