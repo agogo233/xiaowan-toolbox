@@ -274,6 +274,39 @@ def test_ffprobe_parsing(env: FFmpegEnv, real_file: Path) -> None:
     fallback = ff.probe(FFmpegEnv(ffmpeg=env.ffmpeg), missing)
     check("缺失文件不崩溃", not fallback.ok, fallback.error or "无流信息")
 
+    # 🔴 用户实测报过「探测失败：[WinError 2] 系统找不到指定的文件」。
+    # 真正的成因只有一种：refresh() 当时 ffmpeg 在、执行时已不在
+    # （杀毒隔离 / _MEI 临时目录被清 / 外接盘断开）。
+    # 报错必须点明「哪个路径」+「怎么办」，否则用户无从判断。
+    work_bin = real_file.parent / "vanished"
+    work_bin.mkdir()
+    gone = work_bin / Path(env.ffmpeg).name
+    import shutil as _shutil
+    _shutil.copy2(env.ffmpeg, gone)
+    check("消失前该路径确实可执行", Path(gone).is_file(), str(gone))
+    env_gone = FFmpegEnv(ffmpeg=str(gone))
+    _shutil.rmtree(work_bin)                     # 文件整体消失
+    vanished = ff.probe(env_gone, missing)
+    check("ffmpeg 中途消失时报错点明路径与处置",
+          "已不在" in vanished.error and "重新检测" in vanished.error,
+          vanished.error)
+    check("消失的错误信息里包含具体 ffmpeg 路径",
+          str(gone) in vanished.error, vanished.error)
+
+    # 错误码要分开处理：损坏的 exe（WinError 193）文件还在，
+    # 提示「重新检测」是没用的 —— 必须提示重装。
+    broken = real_file.parent / ("broken.exe" if sys.platform.startswith("win")
+                                 else "broken")
+    broken.write_bytes(b"")
+    info_broken = ff.probe(FFmpegEnv(ffmpeg=str(broken)), missing)
+    if sys.platform.startswith("win"):
+        check("损坏的 exe 提示重新安装而非重新检测",
+              "重新安装" in info_broken.error and "重新检测" not in info_broken.error,
+              info_broken.error)
+    else:
+        check("损坏的可执行文件给出人话报错", bool(info_broken.error),
+              info_broken.error)
+
     # 无格式时长时应回退到流时长
     no_dur = {"streams": [dict(FFPROBE_SAMPLE["streams"][0])], "format": {}}
     fake_env = FFmpegEnv(ffmpeg=env.ffmpeg, ffprobe="/usr/local/bin/ffprobe")

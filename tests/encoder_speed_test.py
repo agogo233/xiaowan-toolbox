@@ -29,9 +29,14 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.context import AppContext  # noqa: E402
-from app.core.commands import _speed_args, build_compress_steps  # noqa: E402
-from app.core.ffmpeg import MediaInfo, StreamInfo  # noqa: E402
-from app.core.presets import is_hw_encoder, resolve_codec  # noqa: E402
+from app.core.commands import (build_compress_steps, can_cqp, cqp_args,
+                               qp_max, _speed_args)  # noqa: E402
+from app.core.ffmpeg import (MediaInfo, StreamInfo,
+                             _probe_failure_reason)  # noqa: E402
+from app.core.presets import (HW_ENCODER_LABEL, codec_available,  # noqa: E402
+                              hw_candidates, hw_unusable_reason,
+                              is_hw_encoder, resolve_codec,
+                              resolve_hw_encoder)
 from app.ui.main_window import MainWindow  # noqa: E402
 from app.ui.pages.compress import _speed_available  # noqa: E402
 from app.ui.style import apply_theme  # noqa: E402
@@ -66,10 +71,13 @@ class _FakeEnv:
     ffmpeg = "ffmpeg"
 
     def __init__(self, compiled, usable,
-                 reason: str = "驱动过旧（需要 610 以上）"):
+                 reason: str = "驱动过旧（需要 610 以上）",
+                 reasons: dict | None = None):
         self._compiled = set(compiled)
         self._usable = set(usable)
         self._reason = reason
+        #: 按编码器分别指定原因（多厂商场景要造出"两家各说各话"）
+        self._reasons = dict(reasons or {})
 
     def encoder_available(self, name: str) -> bool:
         return name in self._compiled
@@ -78,7 +86,9 @@ class _FakeEnv:
         return name in self._usable
 
     def unusable_reason(self, name: str) -> str:
-        return self._reason if name in self._compiled else ""
+        if name not in self._compiled:
+            return ""
+        return self._reasons.get(name, self._reason)
 
     def ten_bit_reason(self, name: str) -> str:
         return ""
@@ -311,7 +321,7 @@ def main() -> int:
 
     # 假 env：不必真换硬件就能验证门控本身
     soft = {"libx264", "libx265", "libsvtav1"}
-    hw = {"h264_nvenc", "hevc_nvenc", "av1_nvenc",
+    hw = {"h264_nvenc", "hevc_nvenc", "av1_nvenc", "av1_amf",
           "h264_qsv", "hevc_qsv", "h264_amf", "hevc_amf"}
     no_driver = _FakeEnv(soft | hw, soft)              # 编了但没设备/驱动过旧
     not_built = _FakeEnv(soft, soft)                   # 连编都没编
@@ -385,6 +395,77 @@ def main() -> int:
     page._codec_usable_or_base(probe)
     check("切回之后不再重复提示（tooltip 清空）", probe.toolTip() == "",
           probe.toolTip())
+
+    print("\n[AV1 双厂商：NVIDIA NVENC + AMD AMF]")
+    # AV1 现在有两家硬件：顺序必须先 NVENC 后 AMF。
+    # 🔴 顺序错会让 A+N 双卡机器挑到没做过质量校准的那家。
+    check("AV1 候选里 NVENC 排在 AMF 前面",
+          hw_candidates("auto_hw_av1")[:2] == ["av1_nvenc", "av1_amf"],
+          str(hw_candidates("auto_hw_av1")))
+    check("AV1 两家都有中文标签",
+          HW_ENCODER_LABEL.get("av1_nvenc") == "NVIDIA NVENC"
+          and HW_ENCODER_LABEL.get("av1_amf") == "AMD AMF",
+          f"{HW_ENCODER_LABEL.get('av1_nvenc')} / {HW_ENCODER_LABEL.get('av1_amf')}")
+
+    # 只有 A 卡的机器：NVENC 编了但不能用 → 必须挑中 av1_amf，不能报「本机不可用」
+    amd_only = _FakeEnv(soft | {"av1_nvenc", "av1_amf"},
+                        soft | {"av1_amf"})
+    check("纯 A 卡机器挑中 av1_amf",
+          resolve_hw_encoder("auto_hw_av1", amd_only) == "av1_amf",
+          str(resolve_hw_encoder("auto_hw_av1", amd_only)))
+    ok_amd, _ = codec_available("auto_hw_av1", amd_only)
+    check("纯 A 卡机器：AV1 硬件项显示为可用", ok_amd)
+
+    # 只有 N 卡的机器：顺序不被打乱
+    nv_only = _FakeEnv(soft | {"av1_nvenc", "av1_amf"},
+                       soft | {"av1_nvenc"})
+    check("纯 N 卡机器挑中 av1_nvenc",
+          resolve_hw_encoder("auto_hw_av1", nv_only) == "av1_nvenc",
+          str(resolve_hw_encoder("auto_hw_av1", nv_only)))
+
+    # 两家都不能用：resolve 回退到 libsvtav1（保持"选 AV1 就还是 AV1"）
+    check("两家都不行 → 回退 libsvtav1（不是 libx264）",
+          resolve_codec("auto_hw_av1", no_driver) == "libsvtav1",
+          resolve_codec("auto_hw_av1", no_driver))
+
+    # A 卡失败原因的文案不能说成 NVIDIA —— 纯 A 卡用户没有 N 卡
+    amd_fail = _FakeEnv(soft | {"av1_nvenc", "av1_amf"}, soft,
+                        reasons={
+                            "av1_nvenc": "NVIDIA 驱动过旧（需要 610.00 或更新），"
+                                         "升级显卡驱动后即可用",
+                            "av1_amf": "这块 AMD 显卡不支持 AV1 硬件编码"
+                                       "（需要 RDNA3 及更新的型号）",
+                        })
+    why_amd = hw_unusable_reason("auto_hw_av1", amd_fail)
+    check("A 卡机器报的是 AMD 的原因，不是 NVIDIA 的",
+          "AMD" in why_amd and "NVIDIA" not in why_amd, why_amd)
+
+    print("\n[AV1 的 QP 量程：两家都是 0~255]")
+    # AV1 量化刻度比 H.264 平得多，钳到 51 会让体积修正循环撞墙
+    check("av1_amf 的 QP 上限是 255", qp_max("av1_amf") == 255, str(qp_max("av1_amf")))
+    check("av1_nvenc 的 QP 上限是 255", qp_max("av1_nvenc") == 255)
+    check("h264_amf 的 QP 上限仍是 51", qp_max("h264_amf") == 51)
+    check("av1_amf 支持固定 QP", can_cqp("av1_amf"))
+    check("av1_amf 的 QP 参数走 AMF 写法",
+          cqp_args("av1_amf", 100) == ["-rc", "cqp", "-qp_i", "100", "-qp_p", "100"],
+          str(cqp_args("av1_amf", 100)))
+    check("av1_amf 的 QP 会被钳到 255",
+          cqp_args("av1_amf", 300)[3] == "255", str(cqp_args("av1_amf", 300)))
+    check("av1_amf 不会被钳到 51（那是 H.264 的量程）",
+          cqp_args("av1_amf", 100)[3] == "100", str(cqp_args("av1_amf", 100)))
+    check("h264_amf 仍钳到 51",
+          cqp_args("h264_amf", 300)[3] == "51", str(cqp_args("h264_amf", 300)))
+
+    print("\n[AV1 AMF 的失败原因要说人话]")
+    # 实测本机（AMD Radeon 核显 / 驱动 32.0.11024.2）就是这个错误
+    amf_err = ("[av1_amf @ 0x1] CreateComponent(AMFVideoEncoderHW_AV1) "
+               "failed with error 30")
+    why_amf = _probe_failure_reason(amf_err)
+    check("点名是显卡不支持 AV1（不是「驱动没装好」）",
+          "不支持 AV1" in why_amf, why_amf)
+    check("给出 RDNA3 这个具体门槛", "RDNA3" in why_amf, why_amf)
+    check("给出了可用的替代方案", "软件编码" in why_amf or "H.265" in why_amf,
+          why_amf)
 
     print("\n" + "=" * 60)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

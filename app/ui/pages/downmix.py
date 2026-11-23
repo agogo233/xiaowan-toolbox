@@ -668,7 +668,7 @@ class DownmixPage(Page):
             refresh_merge()
             return
         if not self.ctx.env.ready:
-            bar.set_hint("未找到 ffmpeg，请到「设置」里指定路径", "Danger")
+            bar.set_hint("未找到 ffmpeg，请到「功能设置」里指定路径", "Danger")
             bar.button.setEnabled(False)
             refresh_merge()
             return

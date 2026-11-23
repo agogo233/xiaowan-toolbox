@@ -41,6 +41,12 @@ def make_sample(env, path: Path, seconds: int) -> bool:
 
 
 def run_queue(mgr: QueueManager, timeout_s: float) -> None:
+    """等队列跑空。返回后由调用方自己断言任务状态。
+
+    🔴 timeout_s 必须给足：机器忙时（比如紧跟真跑编码的套件之后）
+    实测 120 秒都不够 3 个任务。这里改成等**最后一个任务真的结束**
+    而不是固定墙钟 —— 但保留上限防止死等。
+    """
     loop = QCoreApplication.instance()
     holder = {"done": False}
     mgr.queueEmpty.connect(lambda: holder.update(done=True))
@@ -49,7 +55,8 @@ def run_queue(mgr: QueueManager, timeout_s: float) -> None:
         loop.processEvents()
         time.sleep(0.02)
     if not holder["done"]:
-        print("  （等待超时，强制继续）")
+        remaining = [t for t in mgr.tasks if t.is_active]
+        print(f"  （等待超时 {timeout_s:.0f}s，仍有 {len(remaining)} 个任务未结束）")
 
 
 def main() -> int:
@@ -87,9 +94,14 @@ def main() -> int:
             from app.core.ffmpeg import probe
             t.info = probe(env, src)
     mgr.add_many(tasks)
-    run_queue(mgr, 120)
+    run_queue(mgr, 300)          # 机器忙时 120s 实测不够（批量回归里踩过）
 
     ok = all(t.status == TaskStatus.DONE for t in tasks)
+    # 先单独断言"都跑完了"这个前提：否则下面几条全是它的连锁失败，
+    # 报错看起来像功能坏了，实际只是没等到
+    check("前提：3 个任务都已结束（非 running/waiting）",
+          all(t.is_finished for t in tasks),
+          "、".join(f"{t.status.value}" for t in tasks))
     check("3 个任务全部完成", ok,
           "、".join(f"{t.status.value}:{t.progress:.0%}" for t in tasks))
     check("输出文件都存在", all(t.dst.exists() for t in tasks),
@@ -331,6 +343,56 @@ def main() -> int:
                       f"{before} -> {after}")
     else:
         print("      跳过优先级实测（未安装 psutil；实现本身只用标准库）")
+
+    print("\n[9] 完成后关机：三重闸门（关机不可逆，默认从严）")
+    from app.core.utils import (cancel_shutdown_command, should_power_off,
+                                shutdown_command)
+    from app.core.task import Task, TaskKind, TaskStatus as TS
+
+    def _mk(status):
+        t = Task(kind=TaskKind.COMPRESS, src=Path("a.mp4"), dst=Path("b.mp4"))
+        t.status = status
+        return t
+
+    # 🔴 这一组是防误关的核心。每一条"不关"都对应一个真实会惹恼用户的场景：
+    ok, why = should_power_off([])
+    check("空队列不关机（空队列触发关机是偷袭）", not ok, why)
+
+    ok, why = should_power_off([_mk(TS.DONE)] * 2)
+    check("全部成功才关机", ok, why)
+
+    ok, why = should_power_off([_mk(TS.DONE), _mk(TS.FAILED)])
+    check("有任务失败就不关机（回来发现文件没出来、电脑却关了）", not ok, why)
+    check("理由里点明失败数量", "1 个任务失败" in why, why)
+
+    ok, why = should_power_off([_mk(TS.DONE), _mk(TS.CANCELED)])
+    check("有任务被取消就不关机", not ok, why)
+
+    ok, why = should_power_off([_mk(TS.DONE)], user_canceled=True)
+    check("用户主动取消过就不关机（我取消了，你却关了电脑）", not ok, why)
+
+    ok, why = should_power_off([_mk(TS.FAILED)] * 2)
+    check("全部失败也不关机", not ok, why)
+
+    ok, why = should_power_off([_mk(TS.DONE), _mk(TS.WAITING)])
+    check("还有任务在等待时不关机（没跑完就关机是漏任务）", not ok, why)
+
+    print("\n[9b] 关机命令按平台构造")
+    cmd = shutdown_command(0)
+    if sys.platform.startswith("win"):
+        check("Windows 用 shutdown /s /t N",
+              cmd[:3] == ["shutdown", "/s", "/t"], str(cmd))
+        check("延迟秒数会传给 /t", "0" in cmd, str(cmd))
+        check("取消关机用 shutdown /a（Windows 才有）",
+              cancel_shutdown_command() == ["shutdown", "/a"],
+              str(cancel_shutdown_command()))
+    elif sys.platform == "darwin":
+        check("macOS 走 osascript（shutdown 需要密码）",
+              "osascript" in cmd[0], str(cmd))
+        check("macOS 无需系统级取消（延迟在应用侧做）",
+              cancel_shutdown_command() == [], str(cancel_shutdown_command()))
+    else:
+        check("Linux 用 shutdown -h", cmd[0] == "shutdown", str(cmd))
 
     print("\n" + "=" * 56)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

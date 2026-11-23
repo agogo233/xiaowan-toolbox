@@ -1623,7 +1623,7 @@ class CompressPage(Page):
             return
         self.bar.button.setEnabled(self.ctx.env.ready)
         if not self.ctx.env.ready:
-            self.bar.set_hint("未找到 ffmpeg，请到「设置」里指定 ffmpeg 路径", "Danger")
+            self.bar.set_hint("未找到 ffmpeg，请到「功能设置」里指定 ffmpeg 路径", "Danger")
             return
 
         info = self.table.info_for(paths[0])
@@ -1659,7 +1659,7 @@ class CompressPage(Page):
             self.bar.button.setEnabled(False)
             return
         if not self.ctx.env.ready:
-            self.bar.set_hint("未找到 ffmpeg，请到「设置」里指定 ffmpeg 路径", "Danger")
+            self.bar.set_hint("未找到 ffmpeg，请到「功能设置」里指定 ffmpeg 路径", "Danger")
             self.bar.button.setEnabled(False)
             return
 
@@ -1889,7 +1889,7 @@ class CompressPage(Page):
         if not paths:
             return
         if not self.ctx.env.ready:
-            self.bar.set_hint("未找到 ffmpeg，请到「设置」里指定路径", "Danger")
+            self.bar.set_hint("未找到 ffmpeg，请到「功能设置」里指定路径", "Danger")
             return
 
         path = paths[0]
@@ -1936,7 +1936,7 @@ class CompressPage(Page):
         if not paths:
             return
         if not self.ctx.env.ready:
-            self.bar.set_hint("未找到 ffmpeg，请到「设置」里指定路径", "Danger")
+            self.bar.set_hint("未找到 ffmpeg，请到「功能设置」里指定路径", "Danger")
             return
 
         settings = self.current_settings()

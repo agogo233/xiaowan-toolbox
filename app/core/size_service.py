@@ -11,7 +11,8 @@ import tempfile
 from pathlib import Path
 
 from .commands import (CommandStep, _base, _is_windows, _speed_args, _tail,
-                       _thread_args, can_cqp, cleanup_passlogs, cqp_args)
+                       _thread_args, can_cqp, cleanup_passlogs, cqp_args,
+                       qp_max)
 from .ffmpeg import FFmpegEnv, MediaInfo
 from .presets import (Container, VideoSettings, is_hw_encoder, resolve_codec)
 from .size_budget import (FAST_MARGIN, MAX_ROUNDS, MIN_VIDEO_KBPS,
@@ -26,7 +27,7 @@ _HEVC_ENCODERS = {"libx265", "hevc_nvenc", "hevc_qsv", "hevc_amf",
 _HEVC_TAG_CONTAINERS = {Container.MP4, Container.MOV}
 
 _WEBM_VIDEO = {"libvpx-vp9", "libvpx", "libaom-av1", "libsvtav1",
-                "av1_nvenc"}
+                "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi"}
 
 # 各容器能承载的音频编码器。Opus 放 MP4/MOV 里播放器支持太差，
 # 所以不列进去 —— 界面会按容器过滤掉 Opus 选项，避免"选了却不生效"。
@@ -252,9 +253,12 @@ def build_cqp_steps(env: FFmpegEnv, src: Path, dst: Path, s: VideoSettings,
     return [CommandStep(args, 1.0, f"硬件编码（QP {qp}）")]
 
 
-#: AV1 NVENC 的 QP 刻度比 H.264 平得多：实测 +6 QP 只减 ~25% 体积，
-#' +16 QP 才接近减半（H.264 的 +6 ≈ 减半）。步长必须按编码器分。
+#: AV1 的 QP 刻度比 H.264 平得多：实测 +6 QP 只减 ~25% 体积，
+#: +16 QP 才接近减半（H.264 的 +6 ≈ 减半）。步长必须按编码器分。
+#: av1_amf 与 av1_nvenc 量程相同（0~255），沿用同一套步长。
 AV1_QP_STEP = 16
+#: 用 AV1 刻度（QP 0~255、步长 16）的编码器
+_AV1_CQP_ENCODERS = {"av1_nvenc", "av1_amf"}
 
 
 def build_cqp_correction_steps(env: FFmpegEnv, src: Path, dst: Path,
@@ -281,8 +285,8 @@ def build_cqp_correction_steps(env: FFmpegEnv, src: Path, dst: Path,
     # 🔴 必须用**解析后**的编码器名判断 —— s.codec 是哨兵（auto_hw_av1），
     # 直接比较永远不成立，步长/上限会错成 H.264 的（实测 QP 被钳到 51）
     video_codec, _ = _pick_codecs(env, s)
-    step = AV1_QP_STEP if video_codec == "av1_nvenc" else 6
-    max_qp = 255 if video_codec == "av1_nvenc" else 51
+    step = AV1_QP_STEP if video_codec in _AV1_CQP_ENCODERS else 6
+    max_qp = qp_max(video_codec)
     delta = math.log2(ratio) * step
     new_qp = max(0, min(max_qp, int(round(qp_used + delta))))
     if new_qp == qp_used:
@@ -491,7 +495,7 @@ def build_size_task(ctx, src: Path, info: MediaInfo | None, s: VideoSettings,
                 f"{video_codec} 无法精确控制体积：它不支持固定 QP 模式，"
                 "目标体积页请改用软编或 NVENC/AMF 硬件编码")
             return task
-        start = CQP_START_AV1 if video_codec == "av1_nvenc" else CQP_START
+        start = CQP_START_AV1 if video_codec in _AV1_CQP_ENCODERS else CQP_START
         task.steps = build_cqp_steps(ctx.env, src, dst, s, budget, start,
                                      audio_mode=audio_mode, info=info,
                                      clip=clip, threads=threads)

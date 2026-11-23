@@ -20,6 +20,7 @@ from ..core.utils import (ffmpeg_install_hint, platform_label,
 from .pages.audio import AudioPage
 from .pages.compress import CompressPage
 from .pages.downmix import DownmixPage
+from .pages.media_info import MediaInfoPage
 from .pages.queue import QueuePage
 from .pages.remux import RemuxPage
 from .pages.settings import SettingsPage
@@ -31,12 +32,15 @@ NAV_ITEMS = [
     ("音频提取", "从视频里取音频，或转换音频格式"),
     ("声道下混", "多声道转立体声；多个单声道文件合成一条"),
     ("封装混流", "换容器 / 挑音轨 / 嵌字幕，不重编码"),
+    ("媒体信息", "查看视频或音频的全部参数，只读不改"),
     ("任务队列", "查看进度、速度与日志"),
-    ("设置", "ffmpeg 路径、输出偏好、外观"),
+    ("功能设置", "ffmpeg 路径、输出偏好、外观"),
 ]
 
 # 任务队列页在导航里的位置（按名字查，避免以后插页面时索引错位）
 QUEUE_INDEX = next(i for i, (name, _) in enumerate(NAV_ITEMS) if name == "任务队列")
+# 「媒体信息 → 拿去压缩」要跳回压缩页（压缩页永远在第 0 位，仍按名字查防错位）
+COMPRESS_INDEX = next(i for i, (name, _) in enumerate(NAV_ITEMS) if name == "视频压缩")
 
 AUTHOR_SITE = "https://axutongxue.com/"
 AUTHOR_SITE_TEXT = "axutongxue.com"
@@ -129,16 +133,24 @@ class MainWindow(QMainWindow):
         self.audio_page = AudioPage(ctx)
         self.downmix_page = DownmixPage(ctx)
         self.remux_page = RemuxPage(ctx)
+        self.media_info_page = MediaInfoPage(ctx)
         self.queue_page = QueuePage(ctx)
         self.settings_page = SettingsPage(ctx)
         for page in (self.compress_page, self.audio_page, self.downmix_page,
-                     self.remux_page, self.queue_page, self.settings_page):
+                     self.remux_page, self.media_info_page,
+                     self.queue_page, self.settings_page):
             self.stack.addWidget(self._wrap_scroll(page))
         layout.addWidget(self.stack, 1)
 
         for page in (self.compress_page, self.audio_page, self.downmix_page,
                      self.remux_page):
             page.requestQueue.connect(lambda: self.go_to(QUEUE_INDEX))
+
+        # 媒体信息页：探测结果直接喂给信息卡；「拿去压缩」带文件跳到压缩页
+        self.media_info_page.table.infoReady.connect(
+            self.media_info_page.on_probe_done)
+        self.media_info_page.requestCompress.connect(
+            self._send_to_compress)
 
         self.settings_page.themeChanged.connect(self._apply_theme)
         self.ctx.envChanged.connect(self._refresh_env_badge)
@@ -250,6 +262,16 @@ class MainWindow(QMainWindow):
     def _show_about_author(self) -> None:
         AboutAuthorDialog(self).exec()
 
+    def _send_to_compress(self, paths: list) -> None:
+        """「拿去压缩」：把文件加进压缩页并切过去。
+
+        只加不覆盖 —— 用户可能已经在压缩页排了别的文件，替他清空
+        是破坏性操作。压缩页自己会去重（同路径不会重复加）。
+        """
+        self.go_to(COMPRESS_INDEX)
+        if paths:
+            self.compress_page.table.add_paths([str(p) for p in paths])
+
     def _apply_theme(self, theme: str) -> None:
         from .style import apply_theme
 
@@ -273,7 +295,7 @@ class MainWindow(QMainWindow):
         else:
             self.env_dot.setText("● 未找到 ffmpeg")
             self.env_dot.setStyleSheet(f"color: {pal['danger']};")
-            self.env_text.setText(f"请到「设置」指定路径\n或：{ffmpeg_install_hint()}")
+            self.env_text.setText(f"请到「功能设置」指定路径\n或：{ffmpeg_install_hint()}")
 
     # ------------------------------------------------------------------ #
     def _restore_geometry(self) -> None:

@@ -98,8 +98,11 @@ def classify(bpp: float) -> QualityLevel:
 # x264 medium 的 0.62 倍码率，软硬编几乎一致）。
 # 阈值表按 H.264 校准，所以 AV1 的 bpp 要**除以** 0.62（即等效于
 # x264 在 1.61 倍码率下的观感），否则画质提示会系统性偏悲观。
+# ⚠️ av1_amf 用的是同一个 0.62：AV1 的效率优势来自编码标准本身，
+# 与哪家硬件实现无关（NVENC 与 SVT-AV1 软编实测几乎一致就是证据）。
+# 这个数字没在 A 卡上单独测过 —— 手上没有 RDNA3+ 的机器。
 AV1_BPP_RATIO = 0.62
-_AV1_CODECS = {"libsvtav1", "av1_nvenc"}
+_AV1_CODECS = {"libsvtav1", "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi"}
 
 
 def assess(info: MediaInfo | None, video_kbps: int,

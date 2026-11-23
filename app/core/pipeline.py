@@ -12,7 +12,7 @@ from .commands import (build_compress_steps, build_downmix_steps,
                        _threads_for_one_job)
 from .ffmpeg import MediaInfo, StreamInfo
 from .presets import (LOSSLESS_AUDIO_CODECS, VIDEO_CONTAINERS, Container,
-                      DownmixSettings, VideoSettings)
+                      DownmixSettings, VideoSettings, cover_support)
 from .task import Task, TaskKind
 from .utils import safe_stem, unique_path
 
@@ -95,7 +95,10 @@ def build_remux_task(ctx, src: Path, info: MediaInfo | None,
                      container: Container, audio_mode: str = "all",
                      audio_codec: str = "copy", audio_bitrate_kbps: int = 192,
                      embed_subtitles: bool = False, faststart: bool = True,
-                     suffix: str | None = None) -> Task:
+                     suffix: str | None = None,
+                     auto_cover: bool = False,
+                     fallback_cover: Path | None = None,
+                     drop_source_cover: bool = False) -> Task:
     cfg = ctx.config
     if suffix is None:
         suffix = cfg.filename_suffix
@@ -113,14 +116,47 @@ def build_remux_task(ctx, src: Path, info: MediaInfo | None,
             for i, st in enumerate(info.subtitles):
                 sub_langs.append(st.language or "")
 
+    cover = resolve_cover(src, container, auto_cover=auto_cover,
+                          fallback=fallback_cover,
+                          drop_source=drop_source_cover)
+
     steps = build_remux_steps(
         ctx.env, src, dst, container,
         audio_mode=audio_mode, audio_codec=audio_codec,
         audio_bitrate_kbps=audio_bitrate_kbps,
         subtitle_files=sub_files, subtitle_langs=sub_langs,
-        faststart=faststart,
+        faststart=faststart, cover=cover,
     )
-    return Task(kind=TaskKind.REMUX, src=src, dst=dst, steps=steps, info=info)
+    return Task(kind=TaskKind.REMUX, src=src, dst=dst, steps=steps, info=info,
+                cover=cover)
+
+
+def resolve_cover(src: Path, container: Container, *, auto_cover: bool = False,
+                  fallback: Path | None = None,
+                  drop_source: bool = False) -> Path | None:
+    """决定这个任务用哪张封面。返回 None 表示不加封面。
+
+    优先级（用户拍板的规则）：
+        1. **同名图片** —— 和字幕同一套思路，每个文件各用各的
+        2. **全局封面** —— 只在没匹配到同名图时兜底
+        3. **不加** —— 都没找到就不动它，不会因为别的文件有封面就跟着加
+
+    🔴 容器不支持的直接返回 None（MOV / WebM）：宁可静默不加，也不要让
+    ffmpeg 在封装时报一个用户看不懂的错。界面上已经提前禁用并说明了原因。
+    """
+    if cover_support(container) == "none":
+        return None
+    # 🔴 drop_source 表示「去掉封面」，必须**最先**判断 ——
+    # 它排在同名匹配之后的话，文件名旁边有同名图时仍然会把封面加回去，
+    # 用户选了"去掉封面"却还是加了，是最难解释的那种 bug。
+    if drop_source:
+        return None
+    if auto_cover:
+        from .ffmpeg import find_cover
+        found = find_cover(src)
+        if found is not None:
+            return found
+    return fallback
 
 
 def _guess_lang(path: Path) -> str:

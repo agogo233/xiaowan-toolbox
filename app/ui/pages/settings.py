@@ -82,7 +82,7 @@ class SettingsPage(Page):
     themeChanged = Signal(str)
 
     def __init__(self, ctx, parent=None):
-        super().__init__(ctx, "设置", "一般保持默认就能用。找不到 ffmpeg 时再来这里指定。")
+        super().__init__(ctx, "功能设置", "一般保持默认就能用。找不到 ffmpeg 时再来这里指定。")
         self.root.addWidget(self._build_env())
         self.root.addWidget(self._build_output())
         self.root.addWidget(self._build_prefs())

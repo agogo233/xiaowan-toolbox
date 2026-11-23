@@ -92,12 +92,14 @@ _HW_TABLE = {
         "win": ["hevc_nvenc", "hevc_qsv", "hevc_amf"],
         "linux": ["hevc_nvenc"],
     },
-    # AV1 硬件编码：只有 NVIDIA NVENC 支持（RTX 40 系起）；
-    # macOS 没有 AV1 硬编（VideoToolbox 不提供），Intel/AMD 的走 QSV/AMF
-    # 的话另算，目前先只接 NVENC —— 本机就是 N 卡。
+    # AV1 硬件编码：NVIDIA NVENC（RTX 40 系起）+ AMD AMF（RDNA3 起，
+    # 即 RX 7000 系 / Ryzen 7040 之后的核显）。
+    # 🔴 顺序有讲究：NVENC 必须排在 AMF 前面 —— 同一台机器装 A+N 双卡时
+    # 先试 NVENC，它的 AV1 质量已做过校准（同 SSIM 只需 x264 约 62% 码率）。
+    # macOS 没有 AV1 硬编（VideoToolbox 不提供）。
     HW_AV1: {
-        "win": ["av1_nvenc"],
-        "linux": ["av1_nvenc"],
+        "win": ["av1_nvenc", "av1_amf"],
+        "linux": ["av1_nvenc", "av1_vaapi"],
     },
 }
 
@@ -111,6 +113,8 @@ HW_ENCODER_LABEL = {
     "hevc_qsv": "Intel Quick Sync",
     "h264_amf": "AMD AMF",
     "hevc_amf": "AMD AMF",
+    "av1_amf": "AMD AMF",
+    "av1_vaapi": "VAAPI",
     "h264_vaapi": "VAAPI",
     "hevc_vaapi": "VAAPI",
 }
@@ -160,7 +164,7 @@ def resolve_codec(codec: str, env=None) -> str:
 _HW_NAMES = {
     "h264_nvenc", "hevc_nvenc", "h264_qsv", "hevc_qsv", "h264_amf", "hevc_amf",
     "h264_videotoolbox", "hevc_videotoolbox", "h264_vaapi", "hevc_vaapi",
-    "av1_nvenc",
+    "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi",
 }
 
 
@@ -173,11 +177,29 @@ def hw_unusable_reason(sentinel: str, env=None) -> str:
 
     一次都没探测过、或 ffmpeg 里根本没编这个编码器时返回空串 —— 那时
     「本机不可用」这种模糊说法反而更准。
+
+    🔴 多厂商时要给**与本机显卡匹配**的那条原因：
+    AV1 现在是 [av1_nvenc, av1_amf]，若直接返回第一条非空原因，
+    纯 A 卡用户会看到「NVIDIA 驱动过旧」—— 他机器上根本没有 NVIDIA 显卡，
+    这句话会把人带到完全错误的排查方向。
+
+    判定依据：`_amf` 编码器**能进入试编并留下失败原因**，就说明 AMF
+    运行时在本机确实加载了（有 A 卡）。纯 N 卡机器上 AMF 连组件都
+    创建不出来，走的是通用的「本机不可用」，不会走到这里。
     """
+    reasons: dict[str, str] = {}
     for cand in hw_candidates(sentinel):
         if env is not None and env.encoder_available(cand):
-            return env.unusable_reason(cand)
-    return ""
+            r = env.unusable_reason(cand)
+            if r:
+                reasons[cand] = r
+    if not reasons:
+        return ""
+    # A 卡的探测结果优先：有 AMF 的原因就说明本机有 A 卡
+    for cand, r in reasons.items():
+        if cand.endswith("_amf"):
+            return r
+    return next(iter(reasons.values()))
 
 
 def codec_available(codec: str, env=None) -> tuple[bool, str]:
@@ -443,6 +465,23 @@ REMUX_CONTAINERS = [
     (Container.MOV, "MOV", "Final Cut / Premiere 剪辑用"),
     (Container.WEBM, "WebM", "网页嵌入，仅支持 VP9/Opus"),
 ]
+
+#: 各容器能不能装封面 —— 全部实测过，不是照文档猜的。
+#:   MP4 : attached_pic 流 + 自动生成 covr 原子 → 播放器和资源管理器都认
+#:   MKV : 只能挂附件（-attach）→ 播放器认，**资源管理器不认**
+#:   MOV : 存不下（ffmpeg 日志显示写入，muxer 不落盘；换 tag 也无效）
+#:   WebM: 没有封面槽位
+COVER_SUPPORT = {
+    Container.MP4: "full",      # 播放器 + 资源管理器
+    Container.MKV: "player",    # 只有播放器
+    Container.MOV: "none",
+    Container.WEBM: "none",
+}
+
+
+def cover_support(container: Container) -> str:
+    """该容器对封面的支持程度：full / player / none。"""
+    return COVER_SUPPORT.get(container, "none")
 
 # --------------------------------------------------------------------------- #
 # 声道下混：5.1 / 7.1 等多声道 → 立体声 / 单声道

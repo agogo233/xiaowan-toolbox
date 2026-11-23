@@ -244,12 +244,11 @@ ok "依赖就绪"
 
 # ---------- 2. ffmpeg -------------------------------------------------------
 info "2/6 准备 ffmpeg / ffprobe"
+# 包里预置了两架构的官方静态构建（bin_mac/），直接复制进 .app ——
+# 这样产物自带 ffmpeg，拷到没装 Homebrew 的 Mac 上也能跑。
+# bin_mac/ 缺失时回退到本机已装的（Homebrew / PATH），仍不中断出包。
 mkdir -p bin
-
 HOST_ARCH="$(uname -m)"
-# bin_mac/ 里预置了两种架构的官方静态构建（从 npmmirror 镜像取的
-# ffmpeg-static b6.1.1）。**优先用它** —— 这样使用者不需要装 Homebrew、
-# 不需要联网，解压后双击就能出包。
 case "$HOST_ARCH" in
   arm64)  MAC_SUFFIX="arm64" ;;
   x86_64) MAC_SUFFIX="x64" ;;
@@ -257,42 +256,40 @@ case "$HOST_ARCH" in
 esac
 
 bundled_ok=0
-if [ -n "$MAC_SUFFIX" ] && [ -f "bin_mac/ffmpeg-$MAC_SUFFIX" ] \
-   && [ -f "bin_mac/ffprobe-$MAC_SUFFIX" ]; then
-  cp "bin_mac/ffmpeg-$MAC_SUFFIX" bin/ffmpeg  || die "复制内置 ffmpeg 失败"
-  cp "bin_mac/ffprobe-$MAC_SUFFIX" bin/ffprobe || die "复制内置 ffprobe 失败"
+if [ -n "$MAC_SUFFIX" ]    && [ -f "bin_mac/ffmpeg-${MAC_SUFFIX}" ]    && [ -f "bin_mac/ffprobe-${MAC_SUFFIX}" ]; then
+  cp "bin_mac/ffmpeg-${MAC_SUFFIX}" bin/ffmpeg || die "复制内置 ffmpeg 失败"
+  cp "bin_mac/ffprobe-${MAC_SUFFIX}" bin/ffprobe || die "复制内置 ffprobe 失败"
   chmod +x bin/ffmpeg bin/ffprobe
-  # Gatekeeper 会给从网上下载的二进制打隔离标记，去掉才允许执行
+  # 从网上下载的二进制会被 Gatekeeper 打隔离标记，去掉才允许执行
   xattr -c bin/ffmpeg bin/ffprobe 2>/dev/null || true
   bundled_ok=1
   ok "使用包内自带的 ffmpeg-${MAC_SUFFIX}（$(du -h bin/ffmpeg | cut -f1)）"
-  ok "无需安装 ffmpeg / Homebrew"
+  ok "产物自带 ffmpeg，无需安装 Homebrew"
 fi
 
 if [ "$bundled_ok" = "0" ]; then
-  warn "包内没有匹配 $HOST_ARCH 的 ffmpeg，回退到系统已安装的版本"
+  warn "包内没有匹配 ${HOST_ARCH} 的 ffmpeg，回退到本机已装的版本"
   SRC=""
-  for cand in "$(command -v ffmpeg 2>/dev/null)" \
-              /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg; do
+  for cand in "$(command -v ffmpeg 2>/dev/null)"               /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg; do
     if [ -n "$cand" ] && [ -x "$cand" ]; then SRC="$cand"; break; fi
   done
   if [ -z "$SRC" ]; then
-    die "找不到可用的 ffmpeg，且包内没有 $HOST_ARCH 版本。
-     请确认 bin_mac/ 目录完整（应含 ffmpeg-arm64/ffmpeg-x64/ffprobe-arm64/ffprobe-x64），
-     或先安装：brew install ffmpeg"
-  fi
-  cp "$SRC" bin/ffmpeg || die "复制 ffmpeg 失败"
-  DIR="$(dirname "$SRC")"
-  if [ -x "$DIR/ffprobe" ]; then
-    cp "$DIR/ffprobe" bin/ffprobe || warn "复制 ffprobe 失败（程序会自动降级）"
+    warn "也没找到本机 ffmpeg —— 照样出包，但 .app 首次启动会提示未就绪"
+    warn "用户可在「设置」里指定路径，或自己装：brew install ffmpeg"
   else
-    warn "同目录下没有 ffprobe，程序将降级用 ffmpeg -i 解析"
+    cp "$SRC" bin/ffmpeg || die "复制 ffmpeg 失败"
+    DIR="$(dirname "$SRC")"
+    if [ -x "$DIR/ffprobe" ]; then
+      cp "$DIR/ffprobe" bin/ffprobe || warn "复制 ffprobe 失败（会降级用 ffmpeg -i）"
+    else
+      warn "同目录下没有 ffprobe，程序将降级用 ffmpeg -i 解析"
+    fi
+    chmod +x bin/ffmpeg bin/ffprobe 2>/dev/null || true
+    ok "已从 ${SRC} 复制 ffmpeg / ffprobe"
   fi
-  chmod +x bin/ffmpeg bin/ffprobe 2>/dev/null || true
-  ok "已从 $SRC 复制"
 fi
 
-# 🔴 架构一致性检查：跨架构的二进制打进去，用户机器上会直接跑不起来
+# 架构一致性：跨架构的二进制打进去，产物在用户机器上跑不起来
 if command -v lipo >/dev/null 2>&1 && [ -f bin/ffmpeg ]; then
   FF_ARCH="$(lipo -archs bin/ffmpeg 2>/dev/null || echo unknown)"
   ok "ffmpeg 架构：${FF_ARCH}（本机 ${HOST_ARCH}）"

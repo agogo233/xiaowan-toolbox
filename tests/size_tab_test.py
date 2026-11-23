@@ -1131,6 +1131,26 @@ def test_bitdepth_crf_trap_unit() -> int:
     check("试压后缀与正常输出不同名", SAMPLE_SUFFIX not in ("", "_compressed"),
           SAMPLE_SUFFIX)
 
+    print("\n[队列页：完成后关机是勾选框，不是按钮]")
+    from PySide6.QtWidgets import QCheckBox as _QCB, QPushButton as _QPB3
+    qp = win.queue_page
+    chk = getattr(qp, "chk_poweroff", None)
+    # 🔴 用户报过：「完成后关机」做成了可勾选的 QPushButton，看着就是个按钮，
+    # 会让人以为「点一下 = 现在就关机」。勾选框才是"这是个开关"的视觉语言，
+    # 而且本软件其他开关（覆盖文件、后台运行、防削波）全是 QCheckBox。
+    check("是 QCheckBox（不是按钮）", isinstance(chk, _QCB),
+          type(chk).__name__ if chk is not None else "缺失")
+    check("没有遗留的按钮式实现",
+          not isinstance(getattr(qp, "btn_poweroff", None), _QPB3),
+          "残留 btn_poweroff" if hasattr(qp, "btn_poweroff") else "无")
+    if chk is not None:
+        check("文案说清是「全部完成后」而非「跑完就关」",
+              "全部完成" in chk.text(), chk.text())
+        # 空队列时勾选应被自动取消（否则用户勾完发现没反应）
+        chk.setChecked(True)
+        pump(app, 0.2)
+        check("空队列勾选会自动取消", not chk.isChecked())
+
     print("\n[关于作者：侧栏按钮 + 弹窗（图片 50% / 链接 #48A2FF）]")
     from app.ui.main_window import AboutAuthorDialog, AUTHOR_LINK_COLOR
     from PySide6.QtWidgets import QLabel as _QLabel, QPushButton as _QPB2

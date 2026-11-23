@@ -100,6 +100,11 @@ class Task:
     # 修正重跑也能带上，不用再改一遍调用链。见 commands._threads_for_one_job。
     threads: int | None = None
 
+    # ---- 封面（封装混流用） ----
+    #: 这个任务实际会嵌入的封面图；None = 不加。队列页显示"封面来源"靠它，
+    #: 而不是在 UI 里再算一遍 —— 算两遍必然出现"界面说加了、实际没加"。
+    cover: Path | None = None
+
     # ------------------------------------------------------------------ #
     @property
     def name(self) -> str:

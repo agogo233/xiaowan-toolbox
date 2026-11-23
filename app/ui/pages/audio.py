@@ -101,7 +101,7 @@ class AudioPage(Page):
             self.bar.button.setEnabled(False)
             return
         if not self.ctx.env.ready:
-            self.bar.set_hint("未找到 ffmpeg，请到「设置」里指定路径", "Danger")
+            self.bar.set_hint("未找到 ffmpeg，请到「功能设置」里指定路径", "Danger")
             self.bar.button.setEnabled(False)
             return
         self.bar.button.setEnabled(True)

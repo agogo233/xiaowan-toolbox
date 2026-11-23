@@ -356,6 +356,10 @@ class FileTable(QTableWidget):
     """支持拖拽导入、异步读取媒体信息的文件表格。"""
 
     filesChanged = Signal()
+    #: 单个文件的探测结果出来时发出 (路径字符串, MediaInfo)。
+    #: 媒体信息页靠它拿到完整字段 —— filesChanged 只说明"变了"，
+    #: 不带数据，页面自己去 infos() 里翻既麻烦又容易取错行。
+    infoReady = Signal(str, object)
 
     HEADERS = ["文件名", "规格", "时长", "大小", "状态"]
 
@@ -577,6 +581,8 @@ class FileTable(QTableWidget):
         if dur:
             dur.setText(human_duration(info.duration))
         self._apply_row_colors(row, info)
+        # 媒体信息页要完整字段（表格只显示概要）
+        self.infoReady.emit(path_str, info)
         # 通知页面刷新体积估算等提示
         self.filesChanged.emit()
 

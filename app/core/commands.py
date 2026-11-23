@@ -194,8 +194,21 @@ _SVTAV1_PRESET = {
 # VideoToolbox 只有 -q:v 的 qscale（与 QP 不是同一刻度）。它们不在名单里，
 # 目标体积页会直接拒绝（见 size_service.build_size_task）。
 # av1_nvenc 已实测支持 constqp 与 10bit（RTX 5060 Ti / 驱动 581.29）。
+# av1_amf 的 rc 选项里同样有 cqp（写法与 h264_amf / hevc_amf 一致）。
 CQP_ENCODERS = {"h264_amf", "hevc_amf", "h264_nvenc", "hevc_nvenc",
-                "av1_nvenc"}
+                "av1_nvenc", "av1_amf"}
+
+#: QP 量程上限。AV1 的量化刻度与 H.264 完全不同 ——
+#: 实测 1708x1212 真实素材、目标 1MB，av1_nvenc 的 QP 51 仍产出 3.8 倍体积。
+#: 🔴 av1_amf 量程也是 0~255（`ffmpeg -h encoder=av1_amf` 写明
+#: 「from -1 to 255」），套 H.264 的 51 会让修正循环撞墙。
+_QP_MAX_DEFAULT = 51
+_QP_MAX_BY_CODEC = {"av1_nvenc": 255, "av1_amf": 255}
+
+
+def qp_max(codec: str) -> int:
+    """该编码器的 QP 上限；未知编码器按 H.264 的 51 处理。"""
+    return _QP_MAX_BY_CODEC.get(codec, _QP_MAX_DEFAULT)
 
 
 def can_cqp(codec: str) -> bool:
@@ -205,14 +218,14 @@ def can_cqp(codec: str) -> bool:
 def cqp_args(codec: str, qp: int) -> list[str]:
     """固定 QP 参数。各家的写法与量程完全不同（实测）：
 
-    AMF      : -rc cqp -qp_i N -qp_p N          （QP 0~51）
+    AMF      : -rc cqp -qp_i N -qp_p N          （H.264/HEVC 0~51，AV1 0~255）
     NVENC    : -rc constqp -qp N                （H.264/HEVC 0~51）
     AV1 NVENC: -rc constqp -qp N                （**0~255**！QP 51 在 1708x1212
                的真实素材上仍产出 3.8 倍于目标的体积 —— AV1 的量化刻度
                比 H.264 平得多，上限钳到 51 会直接让修正循环撞墙）
+    AV1 AMF  : -rc cqp -qp_i N -qp_p N          （**0~255**，与 NVENC 同量程）
     """
-    max_qp = 255 if codec == "av1_nvenc" else 51
-    q = int(round(min(max(qp, 0), max_qp)))
+    q = int(round(min(max(qp, 0), qp_max(codec))))
     if codec.endswith("_amf"):
         return ["-rc", "cqp", "-qp_i", str(q), "-qp_p", str(q)]
     if codec.endswith("_nvenc"):
@@ -523,11 +536,18 @@ def build_remux_steps(
     subtitle_langs: list[str] | None = None,
     faststart: bool = True,
     metadata: dict[str, str] | None = None,
+    cover: Path | None = None,
 ) -> list[CommandStep]:
     args = _base(env) + ["-i", str(src)]
     sub_files = subtitle_files or []
     for sub in sub_files:
         args += ["-i", str(sub)]
+
+    # 封面的输入序号 = 1 + 字幕个数（字幕先加、封面后加）
+    cover_idx = 1 + len(sub_files)
+    use_attach = container == Container.MKV and cover is not None
+    if cover is not None and not use_attach:
+        args += ["-i", str(cover)]
 
     args += ["-map", "0:v:0"]
     if audio_mode == "all":
@@ -538,11 +558,32 @@ def build_remux_steps(
     if container == Container.MKV:
         args += ["-map", "0:s?", "-map", "0:t?", "-map", "0:d?"]
 
-    map_start = 1
+    # 🔴 字幕从输入 #1 开始（源是 #0），封面排在其后 —— 不能把 cover_idx
+    # 当成字幕起点，否则有封面时字幕会映射到封面那一路，直接报错。
     for i, _sub in enumerate(sub_files):
-        args += ["-map", f"{map_start + i}:0"]
+        args += ["-map", f"{1 + i}:0"]
 
-    args += ["-c:v", "copy"]
+    # 🔴 必须写成 `-c:v:0 copy`（带流索引），不能用裸 `-c:v copy`：
+    # 后面还要给封面那一路 `-c:v:1 mjpeg`，两者同时出现时 ffmpeg 会警告
+    # 「Multiple -codec options specified for stream 2, only the last will be used」，
+    # 行为变成"以最后一条为准"，主视频到底有没有被 copy 就不可控了。
+    args += ["-c:v:0", "copy"]
+
+    # ---- 封面 ----
+    # MP4：作为一条 attached_pic 视频流写进去。ffmpeg 会自动额外生成
+    # MP4 的 `covr` 原子（实测：源文件 0 个 → 加 attached_pic 后 1 个，
+    # 格式码 0x0D = JPEG），而 **Windows 资源管理器读的正是 covr**。
+    # 所以这一步既管播放器海报，也管资源管理器缩略图，不需要另外写 box。
+    # 🔴 封面必须转成 mjpeg：直接 copy 任意格式（如 png）时 covr 的格式码
+    # 会跟着变，兼容性不如 JPEG。
+    # 🔴 MOV 存不下 attached_pic（实测：ffmpeg 日志显示写入了，但 muxer
+    # 不落盘，输出的流数仍是 2、covr 为 0；换 tag 也没用）——
+    # 所以 MOV 不支持封面，由上层拦截。
+    if cover is not None and not use_attach:
+        args += ["-map", f"{cover_idx}:v:0"]
+        args += ["-c:v:1", "mjpeg", "-disposition:v:1", "attached_pic"]
+        # attached_pic 流不该参与时长计算
+        args += ["-metadata:s:v:1", "title=Cover"]
 
     if audio_codec == "copy" or audio_mode == "none":
         args += ["-c:a", "copy"] if audio_mode != "none" else ["-an"]
@@ -560,8 +601,21 @@ def build_remux_steps(
     for k, v in (metadata or {}).items():
         args += ["-metadata", f"{k}={v}"]
 
+    # MKV：没有 covr 槽位，只能挂成附件。播放器认，资源管理器不认 ——
+    # 这是容器限制，界面上要说清楚。
+    if use_attach:
+        args += ["-attach", str(cover), "-metadata:s:t:0",
+                 "mimetype=image/jpeg", "-metadata:s:t:0", "filename=cover.jpg"]
+
     if container == Container.MP4 and faststart:
-        args += ["-movflags", "+faststart+use_metadata_tags"]
+        # 🔴 `+use_metadata_tags` 和封面**互斥**：它会把元数据改写成 mdta 原子，
+        # 连带把 attached_pic 流和 covr 封面原子一起丢掉 ——
+        # 实测同一命令：加 use_metadata_tags 时输出只有 2 条流、covr 0 个；
+        # 去掉它则 3 条流、covr 1 个。所以有封面时只给 +faststart。
+        flags = "+faststart"
+        if cover is None:
+            flags += "+use_metadata_tags"
+        args += ["-movflags", flags]
 
     args += _tail() + [str(dst)]
     return [CommandStep(args, 1.0, "封装中")]

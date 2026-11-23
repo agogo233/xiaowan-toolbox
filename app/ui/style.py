@@ -932,4 +932,65 @@ QMenu::separator {{
     background: {p['border']};
     margin: 5px 10px;
 }}
+
+/* ---------------- 封面预览（封装混流页） ---------------- */
+/* 有图时显示图；没图时是虚线占位。尺寸由 CoverThumb.setFixedSize 决定，
+   这里只管外观 —— QSS 的 min/max 会盖掉 setFixedSize。 */
+#CoverThumb {{
+    border: 1px dashed {p['border_strong']};
+    border-radius: 6px;
+    background: {p['content']};
+    color: {p['text_faint']};
+    font-size: 11px;
+    line-height: 1.4;
+}}
+
+/* ---------------- 媒体信息页 ---------------- */
+/* 键值对：标签宽度由 InfoRow.setFixedWidth 控制，这里只管字号/颜色 */
+#InfoCaption {{
+    font-size: 12px;
+    color: {p['text_dim']};
+}}
+#InfoValue {{
+    font-size: 12.5px;
+    color: {p['text']};
+}}
+#InfoValueMono {{
+    font-size: 12px;
+    color: {p['text']};
+    font-family: {MONO_STACK};
+}}
+#InfoBadge {{
+    font-size: 10.5px;
+    font-weight: 600;
+    color: {p['accent']};
+    background: {p['accent_soft']};
+    border-radius: 4px;
+    padding: 1px 6px;
+}}
+#InfoSubHead {{
+    font-size: 11px;
+    font-weight: 600;
+    color: {p['text_faint']};
+    margin-top: 6px;
+}}
+/* 文件条：显示当前正在查看的那个文件 */
+#FileBar {{
+    background: {p['panel']};
+    border: 1px solid {p['border']};
+    border-radius: 10px;
+}}
+#FileBarName {{
+    font-size: 13.5px;
+    font-weight: 600;
+    color: {p['text']};
+}}
+#FileBarPath {{
+    font-size: 11px;
+    color: {p['text_dim']};
+}}
+#FileBarMeta {{
+    font-size: 12px;
+    color: {p['text_dim']};
+}}
 """

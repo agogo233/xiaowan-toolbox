@@ -49,8 +49,8 @@ EXECUTABLE = {"打包小丸工具箱.command", "build_macos.sh", "run.py"}
 # bin/ 里的 Windows exe 不能带进 mac 包
 BIN_SKIP = {"ffmpeg.exe", "ffprobe.exe"}
 
-# bin_mac/ 里的 mac 二进制**必须带上**（这样 mac 用户不用装 ffmpeg），
-# 且在 zip 里要有可执行权限，否则解压后跑不了
+# bin_mac/ 里的 mac 二进制带上（产物自带 ffmpeg，拷给别人也能跑），
+# 且在 zip 里要有可执行权限，否则解压后复制出来的 ffmpeg 跑不了。
 MAC_BIN_DIR = "bin_mac"
 
 # wheels_mac/ 里的离线依赖**必须带上** —— 这样 mac 端 pip 完全不用联网。
@@ -92,9 +92,8 @@ def main() -> int:
             info.compress_type = zipfile.ZIP_DEFLATED
             # 🔴 显式写权限：Python 的 ZipInfo 默认把 external_attr 留空，
             # mac 解压后所有文件都是 644 —— .command 双击就废了，
-            # bin_mac/ 里的 ffmpeg 也会变成"不可执行"。
-            is_mac_bin = rel.parts[0] == MAC_BIN_DIR
-            if is_mac_bin:
+            # bin_mac/ 的 ffmpeg 也会变成不可执行。
+            if rel.parts[0] == MAC_BIN_DIR:
                 mode = 0o755
             elif f.name in EXECUTABLE:
                 mode = 0o755
@@ -114,9 +113,9 @@ def main() -> int:
     mac_bins = [p.name for p in files if p.relative_to(ROOT).parts[0] == MAC_BIN_DIR]
     if mac_bins:
         print(f"  内置 mac 版 ffmpeg/ffprobe：{', '.join(sorted(mac_bins))}")
-        print("  → mac 用户无需安装 ffmpeg / Homebrew")
+        print("  → 产物自带 ffmpeg，拷给别的 Mac 也能直接跑")
     else:
-        print("  ⚠️ 没有 bin_mac/，mac 用户需要自行安装 ffmpeg（brew install ffmpeg）")
+        print("  ⚠️ 没有 bin_mac/，.command 会回退到本机 ffmpeg（brew install ffmpeg）")
 
     mac_wheels = [p.name for p in files
                   if p.relative_to(ROOT).parts[0] == MAC_WHEEL_DIR]

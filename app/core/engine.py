@@ -290,7 +290,7 @@ class QueueManager(QObject):
         env: FFmpegEnv = self._env_provider()
         try:
             if not env.ready:
-                raise RuntimeError("未找到 ffmpeg，请在「设置」中指定路径")
+                raise RuntimeError("未找到 ffmpeg，请在「功能设置」中指定路径")
             if task.cancel_requested:
                 raise _Canceled()
 

@@ -40,6 +40,5 @@ bin_mac/*
 # ---- mac 版离线 wheel（约 180MB，不进仓库；打包时由 fetch_mac_wheels.py 生成） ----
 wheels_mac/*.whl
 
-# ---- 本地开发专用，不公开（导出包的安全网，防止以后误提交） ----
-.agents/
-AGENTS.md
+# ---- 开发期设计稿（HTML 原型 + 截图，不进仓库） ----
+_design/

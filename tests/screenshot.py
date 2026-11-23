@@ -28,7 +28,7 @@ from app.core.ffmpeg import FFmpegEnv  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 from app.ui.style import apply_theme  # noqa: E402
 
-PAGES = ["压缩", "音频", "下混", "封装", "队列", "设置"]
+PAGES = ["压缩", "音频", "下混", "封装", "媒体信息", "队列", "功能设置"]
 
 
 def make_sample(env: FFmpegEnv, path: Path, seconds: int = 30) -> bool:
