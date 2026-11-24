@@ -391,7 +391,7 @@ def build_compress_steps(
     if sc:
         filters.append(sc)
     if s.fps:
-        filters.append(f"fps={s.fps:g}")
+        filters.append(f"fps={s.fps}")   # s.fps 已是 ffmpeg 可用的字符串
 
     # --- 音频 ---
     a_args: list[str] = []
@@ -479,8 +479,92 @@ def _crf_to_qscale(crf: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# 音频提取
+# 抽取拆分（把画面 / 音轨 / 字幕分别拆成独立文件，一律 copy 不重编码）
 # --------------------------------------------------------------------------- #
+
+#: 音频编码 → 输出容器扩展名。
+#: 🔴 必须和源编码匹配：把 AAC 流硬叫 .mp3 会让播放器打不开 ——
+#: 因为我们是 `-c:a copy`，容器和编码对不上就是坏文件。
+#: 拿不准的一律落 .mka（Matroska 音频，什么都能装，实测可用）。
+_AUDIO_EXT_BY_CODEC = {
+    "aac": ".m4a", "alac": ".m4a", "mp3": ".mp3",
+    "ac3": ".ac3", "eac3": ".eac3", "dts": ".dts",
+    "flac": ".flac", "opus": ".opus", "vorbis": ".ogg", "truehd": ".thd",
+}
+
+#: 文本字幕编码 → 统一转成 .srt
+_TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text",
+                    "text", "microdvd", "jacosub", "sami", "realtext"}
+
+#: PGS 图形字幕。实测 `sup` muxer 只认 hdmv_pgs_subtitle，正好匹配。
+_PGS_CODECS = {"hdmv_pgs_subtitle"}
+
+
+def audio_ext_for(codec: str) -> str:
+    """音频编码 → 该用什么扩展名。未知编码走 .mka。"""
+    name = (codec or "").lower()
+    if name.startswith("pcm_"):
+        return ".wav"
+    return _AUDIO_EXT_BY_CODEC.get(name, ".mka")
+
+
+def subtitle_ext_for(codec: str) -> str:
+    """字幕编码 → 抽出后的扩展名。
+
+    文本 → .srt（统一格式，最通用）
+    PGS  → .sup（专用容器，实测 sup muxer 只认 hdmv_pgs_subtitle）
+    其它图形（DVD / DVB）→ .mkv（没有单独 muxer，Matroska 能装位图字幕）
+    """
+    name = (codec or "").lower()
+    if name in _PGS_CODECS:
+        return ".sup"
+    if name in _TEXT_SUB_CODECS:
+        return ".srt"
+    return ".mkv"
+
+
+def is_text_subtitle(codec: str) -> bool:
+    return (codec or "").lower() in _TEXT_SUB_CODECS
+
+
+def build_extract_steps(
+    env: FFmpegEnv,
+    src: Path,
+    dst: Path,
+    kind: str,                 # video / audio / subtitle
+    stream_index: int,         # 源里的**绝对**流序号（ffprobe 的 index）
+    codec: str = "",           # 源流编码名（决定扩展名/是否转容器）
+) -> list[CommandStep]:
+    """从源里抽出一条流存成单独文件。一律 copy，不重编码。
+
+    🔴 用**绝对流序号**而不是 `0:a:N` 这种同类序号：界面上勾的是
+    "第几条音轨"，实现时统一换算成 ffprobe 的 index —— 视频/音频/字幕
+    混在一起时两种写法容易对不上（`0:a:0` 和 `0:1` 可能是同一个流，
+    但源里有多个同类型流时就不是了）。
+    """
+    args = _base(env) + ["-i", str(src), "-map", f"0:{stream_index}"]
+
+    if kind == "video":
+        # 只要画面这一条：显式给 -an -sn，避免把其它流也带出来
+        args += ["-c:v", "copy", "-an", "-sn"]
+    elif kind == "audio":
+        args += ["-c:a", "copy", "-vn", "-sn"]
+    elif kind == "subtitle":
+        if is_text_subtitle(codec):
+            # 文本字幕统一转 srt（ass/ssa/vtt 都能转，srt 最通用）
+            args += ["-c:s", "srt"]
+        else:
+            # 图形字幕原样 copy —— 位图不能转文字
+            args += ["-c:s", "copy"]
+        args += ["-vn", "-an"]
+    else:
+        raise ValueError(f"build_extract_steps: 未知的 kind={kind!r}")
+
+    args += _tail() + [str(dst)]
+    label = {"video": "拆分画面", "audio": "拆分音轨",
+             "subtitle": "拆分字幕"}.get(kind, "拆分")
+    return [CommandStep(args, 1.0, label)]
+
 
 def build_extract_audio_steps(
     env: FFmpegEnv,
@@ -532,12 +616,31 @@ def build_remux_steps(
     audio_mode: str = "all",       # all / first / none
     audio_codec: str = "copy",
     audio_bitrate_kbps: int = 192,
+    audio_sample_rate: int = 0,     # 0 = 保持原始（仅重编码时生效）
+    audio_channels: int = 0,        # 0 = 保持原始（仅重编码时生效）
     subtitle_files: list[Path] | None = None,
     subtitle_langs: list[str] | None = None,
     faststart: bool = True,
     metadata: dict[str, str] | None = None,
     cover: Path | None = None,
+    extra_audio: Path | None = None,
+    extra_audio_replace: bool = True,      # True=替换原声 / False=追加为第 2 条
+    extra_audio_fill: str = "loop",        # loop / once / trim
+    extra_audio_lang: str = "",
+    src_audio_count: int | None = None,
+    timeline_seconds: float = 0.0,
 ) -> list[CommandStep]:
+    """封装（不重编码）成另一个容器。
+
+    `extra_audio`：另外引进来的一段音频（MP3/AAC/WAV/M4A…）。
+    时长与视频不一致时由 `extra_audio_fill` 决定怎么对齐（全部实测过）：
+      loop  音频短 → `-stream_loop -1` 循环铺满，`-shortest` 收尾
+      once  音频短 → `-af apad` 补静音（播放一次后静音）
+      trim  音频长 → 超出的部分被 `-shortest` 截掉
+
+    🔴 输入序号：额外音频**排在封面之后**，已有的 `cover_idx` 计算完全不动。
+    若插在封面之前，封面会映射到音频那一路。
+    """
     args = _base(env) + ["-i", str(src)]
     sub_files = subtitle_files or []
     for sub in sub_files:
@@ -548,6 +651,19 @@ def build_remux_steps(
     use_attach = container == Container.MKV and cover is not None
     if cover is not None and not use_attach:
         args += ["-i", str(cover)]
+
+    # 🔴 额外音频排在**所有已有 -i 之后**，序号才不会打乱 cover_idx。
+    # `-stream_loop` 必须紧贴它要作用的那个 `-i`。
+    audio_idx = cover_idx + (1 if (cover is not None and not use_attach) else 0)
+    if extra_audio is not None and extra_audio_fill == "loop":
+        # 🔴 循环必须有收尾，否则 ffmpeg 会一直写，直到磁盘满
+        # （实测一次测试写了 781 MB）。没拿到时长时宁可不循环 ——
+        # 那种情况下"音频短了后半段没声音"是可接受的降级，
+        # 而"无限写盘"是不可接受的。
+        if timeline_seconds and timeline_seconds > 0:
+            args += ["-stream_loop", "-1"]
+    if extra_audio is not None:
+        args += ["-i", str(extra_audio)]
 
     args += ["-map", "0:v:0"]
     if audio_mode == "all":
@@ -585,10 +701,92 @@ def build_remux_steps(
         # attached_pic 流不该参与时长计算
         args += ["-metadata:s:v:1", "title=Cover"]
 
+    # ---- 额外音频 ----
+    # 🔴 替换原声时上面 `-map 0:a?` 已经把源音轨加进来了，必须用
+    # `-map -0:a`（负号 = 取消映射）把它去掉 —— 否则输出会有两条音轨
+    # （一条原声 + 一条新音频），和"替换"的语义不符。
+    if extra_audio is not None:
+        if extra_audio_replace:
+            args += ["-map", "-0:a"]
+        args += ["-map", f"{audio_idx}:a:0"]
+
     if audio_codec == "copy" or audio_mode == "none":
         args += ["-c:a", "copy"] if audio_mode != "none" else ["-an"]
     else:
-        args += ["-c:a", audio_codec, "-b:a", f"{audio_bitrate_kbps}k"]
+        args += ["-c:a", audio_codec]
+        # 🔴 无损编码不接受 -b:a（给了会报错）。先判再拼，不要拼完再删。
+        if audio_codec not in ("flac", "pcm_s16le", "pcm_s24le") and audio_bitrate_kbps:
+            args += ["-b:a", f"{audio_bitrate_kbps}k"]
+        # 采样率/声道只在重编码时才有意义（copy 时 ffmpeg 会忽略，
+        # 但写进命令会让用户以为生效了 —— 所以上层也禁用了这两个下拉）
+        if audio_sample_rate:
+            args += ["-ar", str(audio_sample_rate)]
+        if audio_channels:
+            args += ["-ac", str(audio_channels)]
+
+    # 额外音频单独指定编码器与码率。
+    #
+    # 🔴 三个坑（都实测过）：
+    #  1. `-c:a:-1` 这种**负索引不被支持** —— ffmpeg 报
+    #     「Trailing garbage at the end of a stream specifier: -1」。
+    #     必须用具体的音轨序号。
+    #  2. 序号要按**输出里的音轨顺序**算，不是输入序号：
+    #     追加模式下额外音频排在源所有音轨之后；替换模式下它是第一条。
+    #  3. 不能只写 `-c:a copy` + `-c:a:N aac` —— ffmpeg 会警告
+    #     「Multiple -codec options specified for stream N」，行为变成
+    #     "以最后一条为准"。所以源音轨的编码也要按索引显式写。
+    #
+    # 额外音频一律转 AAC：源格式五花八门（mp3/flac/wav），直接 copy 到
+    # MP4 会失败，而 AAC 所有容器都认。
+    # 额外音频在**输出**里的音轨序号。后面指定编码器和滤镜都要用它，
+    # 所以在这里一次算好，两个块共用同一个值。
+    #   替换 → 第 0 条（源音轨已被 -map -0:a 去掉）
+    #   追加 → 排在源的所有音轨之后
+    new_idx = 0
+    if extra_audio is not None and audio_mode != "none":
+        if extra_audio_replace:
+            new_idx = 0
+        else:
+            if src_audio_count is None:
+                raise ValueError(
+                    "build_remux_steps: 追加音轨时必须提供 src_audio_count")
+            new_idx = src_audio_count
+        # 额外音频一律转 AAC：源格式五花八门（mp3/flac/wav），
+        # 直接 copy 到 MP4 会失败，而 AAC 所有容器都认。
+        args += [f"-c:a:{new_idx}", "aac", f"-b:a:{new_idx}",
+                 f"{audio_bitrate_kbps}k"]
+        if extra_audio_lang:
+            args += [f"-metadata:s:a:{new_idx}", f"language={extra_audio_lang}"]
+
+    # 时长对齐。
+    #
+    # 🔴 这里**不能用 `-shortest`**，三个坑叠加起来会直接毁掉输出：
+    #   · `-stream_loop -1`（循环铺满）需要某个东西来收尾，否则无限写盘
+    #     —— 实测忘加收尾会一直写到磁盘满（一次测试写了 781 MB）
+    #   · 但 `-shortest` 会把**封面那一路**（attached_pic，只有 1 帧 =
+    #     0.04 秒）当成最短的流，于是整个输出只有 0.02 秒、画面全丢
+    #   · 三者共存时实测：输出 0.02 秒 / 封面流 0 条 / covr 0 个
+    #
+    # 所以改成用 `-t <视频时长>` 显式指定输出长度。这个值调用方必须给
+    # （`timeline_seconds`，来自 info.duration）。
+    # 好处是三种 fill 模式统一收尾，不需要为每种模式单独拼参数。
+    #
+    # 🔴 没有时长就不能生成命令 —— `apad`（补静音）和 `-stream_loop -1`
+    # 都是"无限产出"，缺 `-t` 会一直写下去直到磁盘满。实测一次测试写了
+    # 781 MB 才被发现。宁可在这里**明确拒绝**，也不要交给 ffmpeg 去失控。
+    if extra_audio is not None and audio_mode != "none":
+        if not (timeline_seconds and timeline_seconds > 0):
+            raise ValueError(
+                "build_remux_steps: 有额外音频时必须提供 timeline_seconds"
+                "（源视频时长）—— 否则 apad / stream_loop 会无限写盘")
+        args += ["-t", f"{timeline_seconds:.3f}"]
+        if extra_audio_fill in ("once", "trim"):
+            # 🔴 必须用 `-filter:a:N`（按流索引），**不能**用全局 `-af`。
+            # `-af` 会作用到所有音频流，包括被 `-c:a copy` 保留下来的原声，
+            # 而 copy + 滤镜是互斥的 —— ffmpeg 直接报
+            # 「Filtergraph 'apad' was specified, but codec copy was selected」。
+            # 追加模式下原声是 copy、新音轨才需要 apad，所以只在它那一路加。
+            args += [f"-filter:a:{new_idx}", "apad"]
 
     if sub_files:
         sub_codec = "srt" if container in (Container.MKV, Container.WEBM) else "mov_text"

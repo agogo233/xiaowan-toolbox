@@ -25,10 +25,17 @@ ico = ROOT / "packaging" / "icon.ico"
 
 datas = [(str(ROOT / "app" / "resources" / "icon.png"), "app/resources"),
         (str(ROOT / "app" / "resources" / "qrcode.png"), "app/resources")]
-if ffmpeg.is_file():
-    datas.append((str(ffmpeg), "bin"))
-if ffprobe.is_file():
-    datas.append((str(ffprobe), "bin"))
+
+# 是否内置 ffmpeg（与 xiaowan_win.spec 同一套开关，见那边的说明）。
+# 🔴 onedir 也必须处理这个变量：否则 build_windows.py --onedir --no-ffmpeg
+# 会静默地把 ffmpeg 一起打进去 —— 用户以为拿到的是小包，其实是 460MB。
+import os
+_NO_FFMPEG = os.environ.get("XIAOWAN_NO_FFMPEG", "").strip() not in ("", "0", "false", "False")
+if not _NO_FFMPEG:
+    if ffmpeg.is_file():
+        datas.append((str(ffmpeg), "bin"))
+    if ffprobe.is_file():
+        datas.append((str(ffprobe), "bin"))
 
 # 只保留真正用到的 Qt 模块，其余整块排除，能砍掉上百 MB
 EXCLUDES = [

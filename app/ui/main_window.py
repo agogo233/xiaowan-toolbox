@@ -17,7 +17,7 @@ from ..context import AppContext
 from ..core.task import TaskStatus
 from ..core.utils import (ffmpeg_install_hint, platform_label,
                           resource_path)
-from .pages.audio import AudioPage
+from .pages.extract import ExtractPage
 from .pages.compress import CompressPage
 from .pages.downmix import DownmixPage
 from .pages.media_info import MediaInfoPage
@@ -29,7 +29,7 @@ from .widgets import FileTable, label
 
 NAV_ITEMS = [
     ("视频压缩", "把大视频压小，日常主力功能"),
-    ("音频提取", "从视频里取音频，或转换音频格式"),
+    ("抽取拆分", "把画面、音轨、字幕分别拆成独立文件"),
     ("声道下混", "多声道转立体声；多个单声道文件合成一条"),
     ("封装混流", "换容器 / 挑音轨 / 嵌字幕，不重编码"),
     ("媒体信息", "查看视频或音频的全部参数，只读不改"),
@@ -130,19 +130,19 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.compress_page = CompressPage(ctx)
-        self.audio_page = AudioPage(ctx)
+        self.extract_page = ExtractPage(ctx)
         self.downmix_page = DownmixPage(ctx)
         self.remux_page = RemuxPage(ctx)
         self.media_info_page = MediaInfoPage(ctx)
         self.queue_page = QueuePage(ctx)
         self.settings_page = SettingsPage(ctx)
-        for page in (self.compress_page, self.audio_page, self.downmix_page,
+        for page in (self.compress_page, self.extract_page, self.downmix_page,
                      self.remux_page, self.media_info_page,
                      self.queue_page, self.settings_page):
             self.stack.addWidget(self._wrap_scroll(page))
         layout.addWidget(self.stack, 1)
 
-        for page in (self.compress_page, self.audio_page, self.downmix_page,
+        for page in (self.compress_page, self.extract_page, self.downmix_page,
                      self.remux_page):
             page.requestQueue.connect(lambda: self.go_to(QUEUE_INDEX))
 
@@ -197,14 +197,17 @@ class MainWindow(QMainWindow):
                 # ⚠️ 别用 side 做变量名：上面 side 是侧栏 QWidget，
                 # 覆盖掉它会让布局的父控件被回收（实测报 "already deleted"）
                 px = int(round(34 * ratio))
-                badge.setPixmap(pix.scaled(
+                # 🔴 **必须先设 dpr，再 setPixmap**。
+                # 原来的写法是先 setPixmap、再 `badge.pixmap()` 取回来改 dpr ——
+                # QLabel::pixmap() 是**按值返回副本**，改副本不影响 label 里那份，
+                # 于是 label 存的是 68×68 但 dpr=1.0 的图，被塞进 34×34 的框里，
+                # **只显示左上角 1/4**（用户 mac 上实测就是这样）。
+                scaled = pix.scaled(
                     px, px, Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation))
+                    Qt.TransformationMode.SmoothTransformation)
+                scaled.setDevicePixelRatio(ratio)
+                badge.setPixmap(scaled)
                 badge.setScaledContents(False)
-                # 高 DPI 下让像素图按逻辑尺寸绘制，否则会被放大成虚的
-                pm = badge.pixmap()
-                if pm is not None:
-                    pm.setDevicePixelRatio(ratio)
         else:
             badge.setText("丸")     # 图标缺失时退回文字徽标
         bl.addWidget(badge)

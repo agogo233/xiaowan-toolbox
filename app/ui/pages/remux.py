@@ -1,4 +1,4 @@
-"""封装 / 混流页（换容器、挑音轨、嵌字幕、加封面）。"""
+"""封装 / 混流页（换容器、挑音轨、嵌字幕、加封面、加音频）。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from ...core.pipeline import build_remux_task
 from ...core.presets import REMUX_CONTAINERS, Container, cover_support
 from ...core.utils import VIDEO_EXTS, human_size
 from ..widgets import Card, Combo, FileArea, FileTable, label
+from .remux_audio import ExtraAudioSection
 from .remux_cover import CoverSection
 from .shared import ActionBar, OutputRow, Page, make_file_toolbar
 
@@ -23,6 +24,27 @@ AUDIO_CODECS = [
     ("copy", "原样复制（不重编码）"),
     ("aac", "转成 AAC"),
     ("libmp3lame", "转成 MP3"),
+    ("libopus", "转成 Opus"),
+    ("flac", "转成 FLAC（无损）"),
+    # 音频转格式从「音频提取」页搬到这里（那一页改成只做抽取拆分、不转码）。
+    # 补全是为了不让老用户发现"以前能转 FLAC，现在不行了"。
+    # ⚠️ 容器限制由 _CONTAINER_AUDIO 过滤：WebM 只认 Opus/Vorbis，
+    #    MP4/MOV 不认 FLAC —— 选到装不下的组合时界面会退回 copy 并说明。
+]
+
+#: 需要"采样率"下拉的编码（copy 时保持原样，不给这个选项）
+_AUDIO_SAMPLE_RATES = [
+    (0, "保持原始采样率"),
+    (48000, "48 kHz"),
+    (44100, "44.1 kHz"),
+    (32000, "32 kHz"),
+    (22050, "22.05 kHz"),
+]
+
+_AUDIO_CHANNELS = [
+    (0, "保持原始声道"),
+    (2, "立体声（2 声道）"),
+    (1, "单声道"),
 ]
 
 
@@ -31,7 +53,7 @@ class RemuxPage(Page):
 
     def __init__(self, ctx, parent=None):
         super().__init__(ctx, "封装混流",
-                         "换容器、挑音轨、挂字幕、加封面。默认不重新编码，速度极快、画质无损。")
+                         "换容器、挑音轨、挂字幕、加封面、加音频。默认不重新编码，速度极快、画质无损。")
 
         self.table = FileTable(ctx.env_provider, VIDEO_EXTS)
         area_files = FileArea(
@@ -45,6 +67,11 @@ class RemuxPage(Page):
         # 告警里点「改用 MP4」直接切容器（用户不必自己去上面找那个下拉）
         self.cover.requestContainer.connect(self._switch_container)
 
+        # 额外音频排在封面之后（顺序与 build_remux_steps 的输入序号一致：
+        # 源 → 字幕 → 封面 → 额外音频）
+        self.extra = ExtraAudioSection(ctx)
+        self.extra.changed.connect(self._update_hint)
+
         # 🔴 文件区不给 stretch：加了封面卡之后整页高度会超出窗口
         # （实测 927 > 900，「开始封装」被挤出可视区）。文件表自己有
         # 140px 的下限够用了，多余空间留给参数卡和封面卡。
@@ -52,6 +79,7 @@ class RemuxPage(Page):
         self.root.addWidget(area_files)
         self.root.addWidget(self._build_params())
         self.root.addWidget(self.cover)
+        self.root.addWidget(self.extra)
         self.root.addWidget(self.bar)
         self.root.addStretch(1)
 
@@ -92,6 +120,20 @@ class RemuxPage(Page):
         al.addWidget(self.cmb_audio_codec, 1)
         al.addWidget(self.spin_audio_br)
 
+        # 采样率与声道：音频转格式从「音频提取」页搬过来时补的。
+        # copy 模式下这两项没意义（保持原样），由 _on_audio_mode_changed 禁用。
+        self.cmb_audio_rate = Combo()
+        for value, text in _AUDIO_SAMPLE_RATES:
+            self.cmb_audio_rate.addItem(text, value)
+        self.cmb_audio_rate.currentIndexChanged.connect(
+            lambda _: self._update_hint())
+
+        self.cmb_audio_channels = Combo()
+        for value, text in _AUDIO_CHANNELS:
+            self.cmb_audio_channels.addItem(text, value)
+        self.cmb_audio_channels.currentIndexChanged.connect(
+            lambda _: self._update_hint())
+
         self.chk_subtitles = QCheckBox("嵌入同名字幕文件（.srt / .ass / .vtt）")
         self.chk_subtitles.setChecked(True)
         self.chk_faststart = QCheckBox("MP4 启用 faststart（网页秒开）")
@@ -106,6 +148,10 @@ class RemuxPage(Page):
         grid.addWidget(self.cmb_audio_mode, 0, 3)
         grid.addWidget(label("音轨编码"), 1, 0)
         grid.addWidget(audio_row, 1, 1)
+        grid.addWidget(label("采样率"), 1, 2)
+        grid.addWidget(self.cmb_audio_rate, 1, 3)
+        grid.addWidget(label("声道"), 2, 0)
+        grid.addWidget(self.cmb_audio_channels, 2, 1)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
 
@@ -148,7 +194,12 @@ class RemuxPage(Page):
         mode = self.cmb_audio_mode.currentData()
         codec = self.cmb_audio_codec.currentData()
         self.cmb_audio_codec.setEnabled(mode != "none")
-        self.spin_audio_br.setEnabled(mode != "none" and codec != "copy")
+        # copy 时不重编码，码率/采样率/声道都没有意义 —— 显式禁用，
+        # 免得用户以为改了会生效（那是最容易让人以为"设置没起作用"的坑）
+        recoding = mode != "none" and codec != "copy"
+        self.spin_audio_br.setEnabled(recoding)
+        self.cmb_audio_rate.setEnabled(recoding)
+        self.cmb_audio_channels.setEnabled(recoding)
         self._update_hint()
 
     def _update_hint(self) -> None:
@@ -193,6 +244,8 @@ class RemuxPage(Page):
             tracks.append(f"{len(info.audios)} 条音轨")
         if info.subtitles:
             tracks.append(f"{len(info.subtitles)} 条内嵌字幕")
+        # 让额外音频卡知道源时长（用于显示"音频短/长多少"的对比）
+        self.extra.set_source(info)
         detail = "、".join(tracks) if tracks else "只有视频轨"
         action = "不重新编码，秒级完成" if self.cmb_audio_codec.currentData() == "copy" \
             else "音频需重新编码"
@@ -205,6 +258,10 @@ class RemuxPage(Page):
             return
         if cover_hint:
             hint += f" · {cover_hint}"
+        # 额外音频也汇总进操作栏（它改变了输出，用户该在按钮旁看到）
+        extra_hint = self.extra.summary()
+        if extra_hint:
+            hint += f" · {extra_hint}"
         self.bar.set_hint(hint)
 
     def _cover_summary(self, paths: list) -> str:
@@ -263,6 +320,8 @@ class RemuxPage(Page):
         audio_mode = self.cmb_audio_mode.currentData() or "all"
         audio_codec = self.cmb_audio_codec.currentData() or "copy"
         bitrate = self.spin_audio_br.value()
+        rate = int(self.cmb_audio_rate.currentData() or 0)
+        channels = int(self.cmb_audio_channels.currentData() or 0)
 
         tasks = []
         for path in paths:
@@ -271,10 +330,16 @@ class RemuxPage(Page):
                 self.ctx, path, info, container,
                 audio_mode=audio_mode, audio_codec=audio_codec,
                 audio_bitrate_kbps=bitrate,
+                audio_sample_rate=rate,
+                audio_channels=channels,
                 embed_subtitles=self.chk_subtitles.isChecked(),
                 faststart=self.chk_faststart.isChecked(),
                 auto_cover=self.cover.auto_cover(),
                 fallback_cover=self.cover.global_cover(),
+                extra_audio=self.extra.path(),
+                extra_audio_replace=self.extra.replace_original(),
+                extra_audio_fill=self.extra.fill_mode(),
+                extra_audio_lang=self.extra.language_tag(),
             ))
 
         self.ctx.queue.add_many(tasks)

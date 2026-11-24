@@ -14,14 +14,14 @@ from .ffmpeg import MediaInfo
 
 class TaskKind(str, Enum):
     COMPRESS = "compress"
-    AUDIO = "audio"
+    AUDIO = "audio"          # 兼容旧数据：仍然表示"抽音频/转音频"
     REMUX = "remux"
     DOWNMIX = "downmix"
 
 
 KIND_LABEL = {
     TaskKind.COMPRESS: "视频压缩",
-    TaskKind.AUDIO: "音频提取",
+    TaskKind.AUDIO: "抽取拆分",
     TaskKind.REMUX: "封装混流",
     TaskKind.DOWNMIX: "声道下混",
 }
@@ -104,6 +104,9 @@ class Task:
     #: 这个任务实际会嵌入的封面图；None = 不加。队列页显示"封面来源"靠它，
     #: 而不是在 UI 里再算一遍 —— 算两遍必然出现"界面说加了、实际没加"。
     cover: Path | None = None
+
+    #: 另外引进来的一段音频（封装混流用）；None = 没有
+    extra_audio: Path | None = None
 
     # ------------------------------------------------------------------ #
     @property

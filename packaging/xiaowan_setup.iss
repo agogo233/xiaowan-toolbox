@@ -5,7 +5,7 @@
 ;     ISCC.exe packaging\xiaowan_setup.iss
 ;
 ; 产物：
-;     installer_out\小丸工具箱-2.1.0-安装程序.exe
+;     installer_out\小丸工具箱-2.2.0-安装程序.exe
 ;
 ; 特性：
 ;   · 默认装到当前用户目录（不需要管理员），高级选项里也能改成装给所有用户
@@ -17,7 +17,7 @@
 
 #define MyAppName "小丸工具箱"
 #define MyAppNameEn "XiaoWan Toolbox"
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "2.2.0"
 #define MyAppPublisher "52ting"
 #define MyAppURL "https://github.com/52ting/xiaowan-toolbox"
 #define MyAppExeName "小丸工具箱.exe"

@@ -44,7 +44,11 @@ class VideoSettings:
     tune: str = ""                          # film / animation / grain / stillimage / fastdecode
     profile: str = ""                       # 留空 = auto
     scale_height: int = 0                   # 0 = 保持原始高度
-    fps: float = 0.0                        # 0 = 原始帧率
+    fps: str = ""                           # "" = 保持原始；否则是 ffmpeg 的 fps 值
+                                            # 🔴 用字符串而不是 float：23.976 这类值必须写成
+                                            # 精确分数 24000/1001。实测 fps=23.976 生成
+                                            # 2997/125（差 2.4e-5），剪辑软件会认成「自定义帧率」。
+                                            # 具体取值见 FPS_OPTIONS。
     audio_codec: str = "copy"               # copy / aac / mp3 / none
     audio_bitrate_kbps: int = 128
     audio_channels: int = 0                 # 0 = 原始
@@ -410,12 +414,29 @@ def ten_bit_note(codec: str) -> str:
     return ("H.265 / AV1 的 10bit 是主流格式：2018 年后的手机、电视、显卡基本都能"
             "硬解；Windows 自带播放器需另装「HEVC 视频扩展」。")
 
+#: 帧率选项。值是**直接传给 ffmpeg 的字符串**（""=保持原始）。
+#:
+#: 🔴 23.976 / 29.970 / 59.940 必须写成精确分数（24000/1001 等），
+#: 不能写小数：实测 `fps=23.976` 会让 ffmpeg 生成 `2997/125`，
+#: 剪辑软件会把它标成「自定义帧率」而不是标准 NTSC。
+#: 差异本身极小（两小时约 7 毫秒），但输出文件"像不像标准件"会受影响。
+#:
+#: 顺序：按数值升序 —— 知道数值的用户直接按顺序找；
+#: 「来源」写在 label 的括号里，知道来源的用户也能认出来。
 FPS_OPTIONS = [
-    (0.0, "保持原始帧率"),
-    (60.0, "60 fps"),
-    (30.0, "30 fps"),
-    (24.0, "24 fps"),
+    ("", "保持原始帧率"),
+    ("24000/1001", "23.976 fps（电影）"),
+    ("24", "24 fps（电影）"),
+    ("25", "25 fps（PAL / 国内电视）"),
+    ("30000/1001", "29.970 fps（NTSC / 日美）"),
+    ("30", "30 fps"),
+    ("50", "50 fps（PAL 倍帧）"),
+    ("60000/1001", "59.940 fps（NTSC 倍帧）"),
+    ("60", "60 fps"),
 ]
+
+#: 「自定义」项在 FpsCombo 里追加，data 为 None
+FPS_CUSTOM_LABEL = "自定义（1–240）…"
 
 AUDIO_CODEC_OPTIONS = [
     ("copy", "直接复制（不重编码）"),

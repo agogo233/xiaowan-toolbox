@@ -275,7 +275,7 @@ if [ "$bundled_ok" = "0" ]; then
   done
   if [ -z "$SRC" ]; then
     warn "也没找到本机 ffmpeg —— 照样出包，但 .app 首次启动会提示未就绪"
-    warn "用户可在「设置」里指定路径，或自己装：brew install ffmpeg"
+    warn "用户可在「功能设置」里指定路径，或自己装：brew install ffmpeg"
   else
     cp "$SRC" bin/ffmpeg || die "复制 ffmpeg 失败"
     DIR="$(dirname "$SRC")"

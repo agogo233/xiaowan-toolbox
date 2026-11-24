@@ -28,7 +28,7 @@ from app.core.ffmpeg import FFmpegEnv  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 from app.ui.style import apply_theme  # noqa: E402
 
-PAGES = ["压缩", "音频", "下混", "封装", "媒体信息", "队列", "功能设置"]
+PAGES = ["压缩", "抽取拆分", "下混", "封装", "媒体信息", "队列", "功能设置"]
 
 
 def make_sample(env: FFmpegEnv, path: Path, seconds: int = 30) -> bool:
@@ -56,6 +56,35 @@ def make_surround_sample(env: FFmpegEnv, path: Path, seconds: int = 20) -> bool:
         str(path),
     ], capture_output=True)
     return res.returncode == 0
+
+
+def make_multi_stream_sample(env: FFmpegEnv, path: Path,
+                             seconds: int = 20) -> bool:
+    """多流素材：画面 + 2 条音轨（不同语言）+ 1 条字幕。
+
+    给「抽取拆分」页用 —— 只有单流的话那页只能列出一行，
+    体现不出"可多选、每条流单独成文件"这个核心设计。
+    """
+    sub = path.with_suffix(".srt")
+    sub.write_text(
+        "1\n00:00:00,000 --> 00:00:05,000\n第一句字幕\n\n"
+        "2\n00:00:05,000 --> 00:00:10,000\n第二句字幕\n",
+        encoding="utf-8")
+    res = subprocess.run([
+        env.ffmpeg, "-hide_banner", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
+        "-i", str(sub),
+        "-t", str(seconds),
+        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3:s",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-c:s", "srt",
+        "-metadata:s:a:0", "language=chi",
+        "-metadata:s:a:1", "language=eng",
+        str(path),
+    ], capture_output=True)
+    return res.returncode == 0 and path.exists()
 
 
 def pump(app: QApplication, seconds: float) -> None:
@@ -88,14 +117,20 @@ def main() -> int:
         first = tmp / "产品宣传片_4K素材.mp4"
         second = tmp / "会议录屏_2026-09-08.mp4"
         surround = tmp / "蓝光原盘_5.1音轨.mkv"
+        multi = tmp / "网课录屏_双语字幕.mkv"
         if make_sample(env, first, 30):
             make_sample(env, second, 20)
             window.compress_page.table.add_paths([str(first), str(second)])
-            window.audio_page.table.add_paths([str(first)])
             window.remux_page.table.add_paths([str(first), str(second)])
             if make_surround_sample(env, surround, 20):
                 window.downmix_page.table.add_paths([str(surround)])
-            pump(app, 3.0)  # 等异步探测完成
+            # 抽取拆分页要的是多流素材：单流只能列一行，
+            # 看不出"可多选、每条流单独成文件"
+            if make_multi_stream_sample(env, multi, 20):
+                window.extract_page.table.add_paths([str(multi)])
+            # 媒体信息页放一个普通样本就行
+            window.media_info_page.table.add_paths([str(first)])
+            pump(app, 3.5)  # 等异步探测完成
             shots.append((str(first), str(second)))
 
     for i, name in enumerate(PAGES):

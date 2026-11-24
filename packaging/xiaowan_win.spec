@@ -20,6 +20,7 @@
 目录式（启动快）见 packaging/xiaowan_win_onedir.spec。
 """
 
+import os
 from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve().parent          # packaging/ 的上一级
@@ -30,10 +31,19 @@ ico = ROOT / "packaging" / "icon.ico"
 
 datas = [(str(ROOT / "app" / "resources" / "icon.png"), "app/resources"),
         (str(ROOT / "app" / "resources" / "qrcode.png"), "app/resources")]
-if ffmpeg.is_file():
-    datas.append((str(ffmpeg), "bin"))
-if ffprobe.is_file():
-    datas.append((str(ffprobe), "bin"))
+
+# 是否内置 ffmpeg。默认内置，可用**环境变量**关掉，避免为次需求再维护
+# 一份 spec（两份 spec 迟早会漂移，改了一处忘另一处更难查）：
+#     PowerShell:  $env:XIAOWAN_NO_FFMPEG=1; python -m PyInstaller ...
+#     bash:        XIAOWAN_NO_FFMPEG=1 python -m PyInstaller ...
+# 关掉后产物约 40 MB，用户需自备 ffmpeg（「功能设置」里指定路径或放 PATH）。
+# 注意 build_windows.py --no-ffmpeg 就是设置这个变量后再调用 PyInstaller。
+_NO_FFMPEG = os.environ.get("XIAOWAN_NO_FFMPEG", "").strip() not in ("", "0", "false", "False")
+if not _NO_FFMPEG:
+    if ffmpeg.is_file():
+        datas.append((str(ffmpeg), "bin"))
+    if ffprobe.is_file():
+        datas.append((str(ffprobe), "bin"))
 
 # 只保留真正用到的 Qt 模块，其余整块排除，能砍掉上百 MB
 EXCLUDES = [

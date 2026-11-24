@@ -170,7 +170,7 @@ def build_size_steps(env: FFmpegEnv, src: Path, dst: Path, s: VideoSettings,
     if sc:
         filters.append(sc)
     if s.fps:
-        filters.append(f"fps={s.fps:g}")
+        filters.append(f"fps={s.fps}")   # s.fps 已是 ffmpeg 可用的字符串
 
     m_args: list[str] = []
     if s.container == Container.MP4 and s.faststart:
@@ -235,7 +235,7 @@ def build_cqp_steps(env: FFmpegEnv, src: Path, dst: Path, s: VideoSettings,
     if sc:
         filters.append(sc)
     if s.fps:
-        filters.append(f"fps={s.fps:g}")
+        filters.append(f"fps={s.fps}")   # s.fps 已是 ffmpeg 可用的字符串
 
     m_args: list[str] = []
     if s.container == Container.MP4 and s.faststart:
@@ -320,7 +320,7 @@ def build_fast_steps(env: FFmpegEnv, src: Path, dst: Path, s: VideoSettings,
     if sc:
         filters.append(sc)
     if s.fps:
-        filters.append(f"fps={s.fps:g}")
+        filters.append(f"fps={s.fps}")   # s.fps 已是 ffmpeg 可用的字符串
 
     m_args: list[str] = []
     if s.container == Container.MP4 and s.faststart:
@@ -358,7 +358,7 @@ def build_fast_correction_steps(env: FFmpegEnv, src: Path, dst: Path,
     if sc:
         filters.append(sc)
     if s.fps:
-        filters.append(f"fps={s.fps:g}")
+        filters.append(f"fps={s.fps}")   # s.fps 已是 ffmpeg 可用的字符串
 
     m_args: list[str] = []
     if s.container == Container.MP4 and s.faststart:
@@ -409,7 +409,7 @@ def build_correction_steps(env: FFmpegEnv, src: Path, dst: Path,
     if sc:
         filters.append(sc)
     if s.fps:
-        filters.append(f"fps={s.fps:g}")
+        filters.append(f"fps={s.fps}")   # s.fps 已是 ffmpeg 可用的字符串
 
     m_args = (["-movflags",
                "+faststart+use_metadata_tags" if s.keep_metadata

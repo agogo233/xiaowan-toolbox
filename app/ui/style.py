@@ -945,6 +945,67 @@ QMenu::separator {{
     line-height: 1.4;
 }}
 
+/* 额外音频的文件图标（和封面缩略图同一套观感，但尺寸小一半） */
+#AudioThumb {{
+    border: 1px solid {p['border']};
+    border-radius: 8px;
+    background: {p['accent_soft']};
+    font-size: 18px;
+}}
+
+/* ---------------- 抽取拆分页 ---------------- */
+/* 流勾选行：勾上时整行高亮（不只是勾选框变色）——
+   一眼能看出"这次会拆哪几条" */
+#StreamRow:hover {{
+    background: {p['hover']};
+}}
+#StreamRow[picked="true"] {{
+    background: {p['accent_soft']};
+    border-color: {p['accent']};
+}}
+#StreamKind_video {{
+    color: #0A5FCC;
+    background: #E7F0FF;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+}}
+#StreamKind_audio {{
+    color: #1B7A3D;
+    background: #E6F5EB;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+}}
+#StreamKind_subtitle {{
+    color: #7A5C00;
+    background: #FFF6DE;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+}}
+#StreamName {{
+    font-size: 12.5px;
+    font-weight: 500;
+}}
+#StreamDetail {{
+    font-size: 11.5px;
+    color: {p['text_dim']};
+}}
+/* 目标文件名用等宽字体：一眼看出会不会撞名 */
+#StreamOut {{
+    font-family: {MONO_STACK};
+    font-size: 11px;
+    color: {p['text_dim']};
+}}
+#StreamSize {{
+    font-size: 11px;
+    color: {p['text_faint']};
+}}
+
 /* ---------------- 媒体信息页 ---------------- */
 /* 键值对：标签宽度由 InfoRow.setFixedWidth 控制，这里只管字号/颜色 */
 #InfoCaption {{

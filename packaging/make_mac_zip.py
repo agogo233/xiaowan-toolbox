@@ -19,6 +19,7 @@ mac 用户解压后双击那个 .command 就能得到 .app。
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import zipfile
@@ -27,6 +28,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "dist_mac"
 ZIP_NAME = "小丸工具箱-mac打包.zip"
+
+#: --no-ffmpeg 时的产物名（与自带 ffmpeg 的版本区分开，避免发错）
+ZIP_NAME_NO_FFMPEG = "小丸工具箱-mac打包-不带ffmpeg.zip"
+
+#: 运行时开关：是否把 bin_mac/ 打进 zip。默认 True（自带 ffmpeg）。
+INCLUDE_FFMPEG = True
 
 # 只收源码与构建脚本；排除体积大/平台专属/构建产物
 EXCLUDE_DIRS = {
@@ -62,6 +69,11 @@ def should_include(path: Path) -> bool:
     rel = path.relative_to(ROOT)
     if any(part in EXCLUDE_DIRS for part in rel.parts):
         return False
+    # --no-ffmpeg：整个 bin_mac/ 都不带（连 README 一起）。
+    # 这样 .command 的第 2 步会自动走「回退到本机 ffmpeg」那条路，
+    # 最终 .app 依赖用户自己的 ffmpeg（或让他们在「功能设置」里指定）。
+    if not INCLUDE_FFMPEG and rel.parts and rel.parts[0] == MAC_BIN_DIR:
+        return False
     if path.name in EXCLUDE_NAMES:
         return False
     if path.suffix in EXCLUDE_SUFFIXES:
@@ -75,8 +87,17 @@ def should_include(path: Path) -> bool:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description="生成 Mac 一键打包用的分发 zip")
+    ap.add_argument("--no-ffmpeg", action="store_true",
+                    help="不把 bin_mac/ 打进包里（.app 将依赖用户自己的 ffmpeg）")
+    args = ap.parse_args()
+
+    global INCLUDE_FFMPEG
+    INCLUDE_FFMPEG = not args.no_ffmpeg
+    zip_name = ZIP_NAME_NO_FFMPEG if not INCLUDE_FFMPEG else ZIP_NAME
+
     OUT_DIR.mkdir(exist_ok=True)
-    zip_path = OUT_DIR / ZIP_NAME
+    zip_path = OUT_DIR / zip_name
     if zip_path.exists():
         zip_path.unlink()
 
@@ -114,8 +135,13 @@ def main() -> int:
     if mac_bins:
         print(f"  内置 mac 版 ffmpeg/ffprobe：{', '.join(sorted(mac_bins))}")
         print("  → 产物自带 ffmpeg，拷给别的 Mac 也能直接跑")
-    else:
+    elif INCLUDE_FFMPEG:
         print("  ⚠️ 没有 bin_mac/，.command 会回退到本机 ffmpeg（brew install ffmpeg）")
+    else:
+        # 这是**有意**不带 ffmpeg 的版本，不是缺文件
+        print("  不含 ffmpeg（--no-ffmpeg）：.app 将依赖 mac 上已装的 ffmpeg")
+        print("  → 前提：出包那台 mac 得有 ffmpeg（brew install ffmpeg），")
+        print("     或用户之后在「功能设置」里手动指定路径")
 
     mac_wheels = [p.name for p in files
                   if p.relative_to(ROOT).parts[0] == MAC_WHEEL_DIR]

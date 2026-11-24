@@ -16,7 +16,8 @@ from ...core.commands import (SAMPLE_SECONDS, SAMPLE_SECONDS_OPTIONS,
                              estimate_output_size_mb, sample_span,
                              truncated_info)
 from ...core.pipeline import build_compress_task
-from ...core.presets import (AUDIO_CODEC_OPTIONS, CONTAINER_LABEL, FPS_OPTIONS,
+from ...core.presets import (AUDIO_CODEC_OPTIONS, CONTAINER_LABEL,
+                             FPS_CUSTOM_LABEL, FPS_OPTIONS,
                              PIX_FMT_OPTIONS, PRESETS, PRESETS_BY_KEY,
                              SCALE_OPTIONS, TUNE_OPTIONS,
                              X264_PRESETS, Container, Preset, RateMode,
@@ -310,27 +311,48 @@ def _fdk_option(env) -> tuple[str, str] | None:
     return None
 
 
+def _fps_value(raw: str) -> float:
+    """把 FPS_OPTIONS 的值（"25" / "24000/1001" / ""）转成 float。
+
+    "" 表示「保持原始」，返回 0.0。分数按除法算。
+    只用于**比较和显示**（判断是否高于源帧率）；
+    传给 ffmpeg 的仍然是原始字符串，保证精确。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return 0.0
+    if "/" in raw:
+        num, _, den = raw.partition("/")
+        return float(num) / float(den)
+    return float(raw)
+
+
 class FpsCombo(Combo):
     """帧率下拉：预置档位 + 「自定义…」让用户直接填帧率。
 
     自定义项的 data 恒为 None —— 这样再次选择它会重新弹出输入框；
-    实际数值存在 _custom_value，currentData() 对外返回它，
-    下游 `currentData() or 0.0` 的取值逻辑完全不用改。
+    实际数值存在 _custom_value，currentData() 对外返回它。
+
+    🔴 值统一是**字符串**（如 "24000/1001"），不是 float。
+    预置档位里 23.976 / 29.970 / 59.940 必须传精确分数，
+    实测 `fps=23.976` 会让 ffmpeg 生成 `2997/125`，
+    剪辑软件会把它标成「自定义帧率」而不是标准 NTSC。
+    「自定义」项用户手填的是小数，那是他明确要的值，保持原样。
+
     取消输入则回退到上一个档位。
     """
 
-    CUSTOM_LABEL = "自定义…"
-
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._custom_value: float | None = None
+        #: 自定义值，字符串形式（如 "23.98"）；None = 还没填过
+        self._custom_value: str | None = None
         self._prev_index = 0            # 上一个非自定义选择（取消时回退）
         self.currentIndexChanged.connect(self._remember_prev)
 
     def add_fps_options(self, options) -> None:
         for value, text in options:
             self.addItem(text, value)
-        self.addItem(self.CUSTOM_LABEL, None)
+        self.addItem(FPS_CUSTOM_LABEL, None)
 
     def _remember_prev(self, index: int) -> None:
         if index >= 0 and self.itemData(index) is not None:
@@ -343,12 +365,19 @@ class FpsCombo(Combo):
             return
 
         was_custom = self.currentIndex() == row
+        # 回填上次的值（字符串转回 float 给输入框）
+        seed = 29.97
+        if self._custom_value:
+            try:
+                seed = float(self._custom_value)
+            except ValueError:
+                pass
         value, ok = QInputDialog.getDouble(
             self.window(), "自定义帧率", "帧率（fps，1–240）：",
-            self._custom_value if self._custom_value else 29.97,
-            1.0, 240.0, 2)
+            seed, 1.0, 240.0, 2)
         if ok:
-            self._custom_value = float(value)
+            # :g 去掉多余的零（30.00 → 30），避免 fps=30.00 这种写法
+            self._custom_value = f"{value:g}"
             self.setItemText(row, f"自定义（{value:g} fps）")
             self.setCurrentIndex(row)
             self.hidePopup()
@@ -363,12 +392,13 @@ class FpsCombo(Combo):
     def currentData(self, role=Qt.ItemDataRole.UserRole):       # noqa: N802
         row = self.currentIndex()
         if 0 <= row < self.count() and self.itemData(row) is None:
-            return self._custom_value if self._custom_value is not None else 0.0
+            return self._custom_value if self._custom_value is not None else ""
         return super().currentData(role)
 
     def findData(self, value, role=Qt.ItemDataRole.UserRole):   # noqa: N802
         idx = super().findData(value, role)
-        if idx < 0 and self._custom_value is not None and value == self._custom_value:
+        if idx < 0 and self._custom_value is not None \
+                and str(value) == self._custom_value:
             for r in range(self.count()):
                 if self.itemData(r) is None:
                     return r
@@ -519,8 +549,10 @@ class CompressPage(Page):
 
         self.table.filesChanged.connect(self._update_estimate)
         self.table.filesChanged.connect(self._refresh_sample_button)
+        self.table.filesChanged.connect(self._refresh_fps_labels)
         self._select_preset("balanced")
         self._update_estimate()
+        self._refresh_fps_labels()
 
     # ------------------------------------------------------------------ #
     # 页签
@@ -948,7 +980,7 @@ class CompressPage(Page):
             codec=codec,
             preset=self.size_speed.currentData() or "medium",
             scale_height=int(self.size_scale.currentData() or 0),
-            fps=float(self.size_fps.currentData() or 0.0),
+            fps=self.size_fps.currentData() or "",
             pix_fmt=self.size_pixfmt.currentData() or "",
             audio_codec=audio_codec,
             # Opus 在同样听感下比 AAC 省 ~30%，默认 96 就够，把比特留给视频
@@ -1582,7 +1614,7 @@ class CompressPage(Page):
             preset=self.cmb_speed.currentData() or "medium",
             tune=self.cmb_tune.currentData() or "",
             scale_height=int(self.cmb_scale.currentData() or 0),
-            fps=float(self.cmb_fps.currentData() or 0.0),
+            fps=self.cmb_fps.currentData() or "",
             audio_codec=self.cmb_audio.currentData() or "aac",
             audio_bitrate_kbps=self.spin_audio_br.value(),
             container=Container(self.cmb_container.currentData() or "mp4"),
@@ -1591,6 +1623,27 @@ class CompressPage(Page):
     def target_size_mb(self) -> float:
         # 「按文件大小」是独立页签，不走这里的固定码率路径。
         return 0.0
+
+    def _fps_warning(self, settings: VideoSettings,
+                     info) -> str:
+        """选了比源更高的帧率时给一句提示（空串 = 不需要提示）。
+
+        🔴 调高帧率**不会让画面变流畅** —— 源里没有的信息造不出来，
+        只是把每帧复制一遍、文件白白变大。这一点很多用户误解，
+        但也不能把它做成常驻提示（那几乎每次压缩都挂一句，很快就无视了）。
+        所以只在「目标 > 源」时出现一次。
+        """
+        if not (settings.fps and info and info.video and info.video.fps):
+            return ""
+        try:
+            target = _fps_value(settings.fps)
+        except (ValueError, ZeroDivisionError):
+            return ""
+        src = info.video.fps
+        if target <= src * 1.01:          # 留 1% 容差，避免 29.97→30 误报
+            return ""
+        return (f"⚠️ 目标帧率 {target:g} 高于源的 {src:g} —— "
+                "调高不会让画面更流畅，只会让文件变大")
 
     def _update_estimate(self) -> None:
         bar = getattr(self, "bar", None)
@@ -1630,14 +1683,19 @@ class CompressPage(Page):
         est = estimate_output_size_mb(settings, info, self.target_size_mb())
         count = len(paths)
         prefix = f"共 {count} 个任务 · " if count > 1 else ""
+        fps_warn = self._fps_warning(settings, info)
         if est and info:
             src_mb = info.size / 1024 / 1024
             ratio = (est / src_mb * 100) if src_mb else 0
-            self.bar.set_hint(
-                f"{prefix}首个文件预计 {human_size(est * 1024 * 1024)}"
-                f"（原 {human_size(info.size)}，约 {ratio:.0f}%）")
+            hint = (f"{prefix}首个文件预计 {human_size(est * 1024 * 1024)}"
+                    f"（原 {human_size(info.size)}，约 {ratio:.0f}%）")
         else:
-            self.bar.set_hint(f"{prefix}文件信息读取中…")
+            hint = f"{prefix}文件信息读取中…"
+        if fps_warn:
+            # 帧率问题优先展示：它会让文件变大且不改善画质，比体积估算更该先说
+            self.bar.set_hint(f"{hint} · {fps_warn}", "Warn")
+        else:
+            self.bar.set_hint(hint)
 
     # ------------------------------------------------------------------ #
     # 按文件大小：预检与提示
@@ -1767,8 +1825,13 @@ class CompressPage(Page):
             extra = ""
             if settings.container == Container.WEBM:
                 extra = "（WebM 自动用 VP9 + Opus）"
-            self.bar.set_hint(
-                prefix + f"视频 {budget.video_kbps} kbps · 编码后会自动校验体积" + extra)
+            hint = prefix + f"视频 {budget.video_kbps} kbps · 编码后会自动校验体积" + extra
+            # 帧率调高会让同样体积目标更难达成，且不改善画质 —— 必须说清
+            fps_warn = self._fps_warning(settings, info)
+            if fps_warn:
+                self.bar.set_hint(f"{hint} · {fps_warn}", "Warn")
+            else:
+                self.bar.set_hint(hint)
         else:
             self.bar.button.setEnabled(False)
             self.bar.set_hint("目标不可行，请调大目标或放宽音频设置", "Danger")
@@ -1825,6 +1888,28 @@ class CompressPage(Page):
             y = max(avail.top(), min(y, avail.bottom() - size.height() + 1))
 
         menu.exec(QPoint(x, y))
+
+    def _refresh_fps_labels(self) -> None:
+        """把源帧率写进两处帧率下拉的「保持原始」项里。
+
+        用户看到「保持原始帧率（25 fps）」就知道自己的源是多少，
+        也就能判断「我要不要动它」。没有文件时退回单纯的「保持原始帧率」。
+        """
+        paths = self.table.paths
+        info = self.table.info_for(paths[0]) if paths else None
+        src_fps = info.video.fps if info and info.video else 0.0
+        if src_fps:
+            # 29.97 这种保留两位小数；25 这种整数不显示小数点
+            text = f"保持原始帧率（{src_fps:g} fps）"
+        else:
+            text = "保持原始帧率"
+        for combo in (getattr(self, "cmb_fps", None),
+                      getattr(self, "size_fps", None)):
+            if combo is None:
+                continue
+            idx = combo.findData("")
+            if idx >= 0:
+                combo.setItemText(idx, text)
 
     def _refresh_sample_button(self) -> None:
         """刷新试压按钮的可用性与提示。
