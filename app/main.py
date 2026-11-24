@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (QAbstractSlider, QAbstractSpinBox, QApplication,
 
 from . import __version__
 from .context import AppContext
-from .core.utils import startup_log
 from .ui.main_window import MainWindow
 from .ui.style import apply_theme
 
@@ -60,7 +59,6 @@ def resource_path(*parts: str):
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
 
-    startup_log("创建 QApplication")
     app = QApplication(argv)
     app.setApplicationName("小丸工具箱")
     app.setApplicationDisplayName("小丸工具箱")
@@ -80,15 +78,9 @@ def main(argv: list[str] | None = None) -> int:
     ctx = AppContext()
     apply_theme(app, ctx.config.theme)
 
-    startup_log("创建主窗口")
     window = MainWindow(ctx)
-    startup_log("调用 show()（原生窗口创建 + 首帧绘制）")
     window.show()
-    startup_log("主窗口已显示，进入事件循环")
-    try:
-        return app.exec()
-    finally:
-        startup_log("事件循环退出")
+    return app.exec()
 
 
 if __name__ == "__main__":

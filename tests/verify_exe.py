@@ -19,7 +19,7 @@ from pathlib import Path
 from PIL import Image  # 顶部导入：缺依赖应直接报错，而不是静默跳过截图
 
 ROOT = Path(__file__).resolve().parents[1]
-TITLE = "小丸工具箱"
+EXE_NAME = "XiaoWanToolbox"
 
 # Windows 下 stdout 被重定向到管道/文件时，Python 会退回 GBK（cp936），
 # 打印下面的 ▶ / ✓ / ✗ 会直接抛 UnicodeEncodeError 把脚本打断。
@@ -94,7 +94,7 @@ def main() -> int:
         pass
 
     exe = Path(sys.argv[1]) if len(sys.argv) > 1 else (
-        ROOT / "dist" / TITLE / f"{TITLE}.exe")
+        ROOT / "dist" / EXE_NAME / f"{EXE_NAME}.exe")
     out_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "_shots"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -118,11 +118,6 @@ def main() -> int:
             if log.is_file():
                 print("\n--- crash.log ---")
                 print(log.read_text(encoding="utf-8", errors="replace")[-2500:])
-            slog = Path.home() / "AppData" / "Roaming" / "XiaoWanToolbox" / "startup.log"
-            if slog.is_file():
-                # 原生崩溃（如 0xC0000409）无 crash.log，死前最后一行 startup.log 是唯一锚点
-                print("\n--- startup.log ---")
-                print(slog.read_text(encoding="utf-8", errors="replace"))
             return 1
         hwnd = _find_window_for_pid(proc.pid)
         if hwnd:

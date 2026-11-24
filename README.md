@@ -49,8 +49,10 @@ Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS /
 
 ### 方式二：免安装（便携）
 
-双击 `dist/小丸工具箱/小丸工具箱.exe`。
+双击 `dist/XiaoWanToolbox/XiaoWanToolbox.exe`。
 **自带 ffmpeg，不需要装任何东西**；整个文件夹拷给别人也能直接用。
+（exe 文件名用 ASCII——部分中文 Windows 上双击中文名 exe 会原生崩溃，
+程序窗口标题仍是"小丸工具箱"。）
 
 ### 从源码运行
 
@@ -68,7 +70,7 @@ python packaging\build_windows.py --clean
 ```
 
 脚本会：检查 / 准备 `bin\ffmpeg.exe` → 生成 `icon.ico` → PyInstaller 打包
-→ 输出到 `dist\小丸工具箱\`。
+→ 输出到 `dist\XiaoWanToolbox\`。
 
 > `bin\ffmpeg.exe` 不入库（太大），获取方式见 [`bin/README.md`](bin/README.md)。
 > 没有它也能打包，只是产物不自带 ffmpeg。

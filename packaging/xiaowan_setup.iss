@@ -5,7 +5,7 @@
 ;     ISCC.exe packaging\xiaowan_setup.iss
 ;
 ; 产物：
-;     installer_out\小丸工具箱-1.2.4-安装程序.exe
+;     installer_out\XiaoWanToolbox-1.2.4-Setup.exe
 ;
 ; 特性：
 ;   · 默认装到当前用户目录（不需要管理员），高级选项里也能改成装给所有用户
@@ -26,7 +26,10 @@
 #endif
 #define MyAppPublisher "52ting"
 #define MyAppURL "https://github.com/52ting/xiaowan-toolbox"
-#define MyAppExeName "小丸工具箱.exe"
+; exe 与 dist 目录名必须用 ASCII：实测中文名 exe 在部分中文 Windows 上
+; 双击会原生崩溃（0xC0000409）；面向用户的显示名仍是 MyAppName（中文）
+#define MyAppExeName "XiaoWanToolbox.exe"
+#define MyAppDirName "XiaoWanToolbox"
 
 [Setup]
 ; AppId 一旦发布就不要改，否则会被当成另一个程序（升级时无法覆盖安装）
@@ -84,8 +87,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
-; 整个免安装目录原样搬进安装目录
-Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; \
+; 整个免安装目录原样搬进安装目录（dist 目录名与 spec 的 COLLECT name 一致）
+Source: "..\dist\{#MyAppDirName}\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]

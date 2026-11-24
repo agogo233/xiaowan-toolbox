@@ -5,8 +5,10 @@
     pyinstaller packaging/xiaowan_win.spec --noconfirm
 
 产物：
-    dist/小丸工具箱/小丸工具箱.exe      双击即用，无需装 Python
-    （onedir 模式：启动快、体积可控；拷整个文件夹即可分发）
+    dist/XiaoWanToolbox/XiaoWanToolbox.exe   双击即用，无需装 Python
+    （onedir 模式：启动快、体积可控；拷整个文件夹即可分发。
+      exe 与目录名必须用 ASCII——实测中文名 exe 在部分中文 Windows
+      上双击会原生崩溃 0xC0000409，显示名仍由程序窗口标题保留中文）
 
 如果仓库根目录存在 bin/ffmpeg.exe 与 bin/ffprobe.exe，会被一并打进包里，
 实现"开箱即用、无需另外安装 ffmpeg"。
@@ -70,7 +72,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="小丸工具箱",
+    name="XiaoWanToolbox",
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
@@ -86,5 +88,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="小丸工具箱",
+    name="XiaoWanToolbox",
 )

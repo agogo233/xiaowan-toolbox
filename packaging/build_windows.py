@@ -6,7 +6,7 @@
     python packaging/build_windows.py --clean     # 先清掉旧产物再打包
 
 产物：
-    dist/小丸工具箱/小丸工具箱.exe
+    dist/XiaoWanToolbox/XiaoWanToolbox.exe
 
 为什么用 Python 脚本而不是 .bat：
     .bat 在含中文/UTF-8 时的编码行为很不稳定，中文 exe 名容易被写坏。
@@ -23,7 +23,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / "packaging"
-APP_NAME = "小丸工具箱"
+# exe 与 dist 目录名必须用 ASCII：实测中文名 exe 在部分中文 Windows 上
+# 双击会原生崩溃（0xC0000409）；程序显示名仍由窗口标题保留中文
+APP_NAME = "XiaoWanToolbox"
 
 
 def _run(cmd: list[str], desc: str) -> bool:
@@ -107,7 +109,7 @@ def main() -> int:
     print(f"  整个目录  ：{out_dir}")
     print(f"  目录体积  ：{total / 1048576:.1f} MB")
     print()
-    print("  分发方式：把整个「小丸工具箱」文件夹拷给别人，双击里面的 exe 即可。")
+    print("  分发方式：把整个 dist/XiaoWanToolbox 文件夹拷给别人，双击里面的 exe 即可。")
     return 0
 
 

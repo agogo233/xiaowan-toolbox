@@ -40,12 +40,6 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 40
-    # PySide6 版本对照：6.12 为当前版本；6.8 为 LTS 对照，
-    # 用于区分"Qt 版本回归"与"用户机器环境"两类启动崩溃
-    strategy:
-      fail-fast: false
-      matrix:
-        pyside: ['6.12', '6.8']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,7 +51,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install "PySide6-Essentials==${{ matrix.pyside }}.*" "imageio-ffmpeg>=0.4.9" pyinstaller pillow
+        run: pip install -r requirements.txt pyinstaller pillow
 
       - name: Resolve version (tag must match app/__init__.py)
         id: ver
@@ -76,9 +70,6 @@ jobs:
           }
           Add-Content $env:GITHUB_OUTPUT "VERSION=$ver"
           Add-Content $env:GITHUB_OUTPUT "SUFFIX=$suffix"
-          $pysideTag = ''
-          if ('${{ matrix.pyside }}' -eq '6.8') { $pysideTag = '-pyside68' }
-          Add-Content $env:GITHUB_OUTPUT "PYSIDETAG=$pysideTag"
 
       - name: Download ffmpeg and verify sha256
         run: |
@@ -123,24 +114,19 @@ jobs:
         run: |
           $env:XIAOWAN_CONSOLE_DEBUG = '1'
           python -m PyInstaller packaging/xiaowan_win.spec --noconfirm --distpath dist_debug --workpath build_debug
-          $exe = 'dist_debug/小丸工具箱/小丸工具箱.exe'
+          $exe = 'dist_debug/XiaoWanToolbox/XiaoWanToolbox.exe'
           if (-not (Test-Path $exe)) { Write-Error 'debug 诊断版构建失败'; exit 1 }
           Write-Host "debug 诊断版已生成：$exe"
 
       - name: Smoke test portable exe
         run: |
-          $exe = 'dist/小丸工具箱/小丸工具箱.exe'
+          $exe = 'dist/XiaoWanToolbox/XiaoWanToolbox.exe'
           if (-not (Test-Path $exe)) { Write-Error "找不到 $exe"; exit 1 }
-          if (-not (Test-Path 'dist/小丸工具箱/_internal')) { Write-Error 'onedir 布局不完整：缺少 _internal'; exit 1 }
+          if (-not (Test-Path 'dist/XiaoWanToolbox/_internal')) { Write-Error 'onedir 布局不完整：缺少 _internal'; exit 1 }
           # verify_exe.py 会启动 exe、按 PID 等待可见主窗口出现（60 秒超时）
           # 并截图——只查"进程存活"会放行"活着但没窗口"的坏包
           python tests/verify_exe.py $exe _shots_ci
           if ($LASTEXITCODE -ne 0) {
-            $slog = Join-Path $env:APPDATA 'XiaoWanToolbox/startup.log'
-            if (Test-Path $slog) {
-              Write-Host '----- startup.log -----'
-              Get-Content $slog -Encoding UTF8 | ForEach-Object { Write-Host $_ }
-            }
             Write-Error '启动冒烟测试失败：进程退出，或 60 秒内未出现窗口'
             exit 1
           }
@@ -158,12 +144,11 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: windows-smoke-screenshots${{ steps.ver.outputs.PYSIDETAG }}
+          name: windows-smoke-screenshots
           path: _shots_ci
           if-no-files-found: ignore
 
       - name: Pack portable zip
-        if: matrix.pyside == '6.12'
         run: |
           $distDir = (Get-ChildItem dist -Directory | Select-Object -First 1).FullName
           if (-not $distDir) { Write-Error 'dist 下没有产物目录'; exit 1 }
@@ -178,7 +163,6 @@ jobs:
           SUFFIX: ${{ steps.ver.outputs.SUFFIX }}
 
       - name: Build installer (Inno Setup)
-        if: matrix.pyside == '6.12'
         run: |
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { Write-Error 'choco 安装 Inno Setup 失败'; exit 1 }
@@ -202,12 +186,11 @@ jobs:
       - name: Upload artifact (portable dir)
         uses: actions/upload-artifact@v4
         with:
-          name: XiaoWanToolbox-${{ steps.ver.outputs.VERSION }}${{ steps.ver.outputs.SUFFIX }}${{ steps.ver.outputs.PYSIDETAG }}-portable-win64
-          path: dist/小丸工具箱
+          name: XiaoWanToolbox-${{ steps.ver.outputs.VERSION }}${{ steps.ver.outputs.SUFFIX }}-portable-win64
+          path: dist/XiaoWanToolbox
           if-no-files-found: error
 
       - name: Upload artifact (installer)
-        if: matrix.pyside == '6.12'
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
@@ -219,12 +202,12 @@ jobs:
         if: ${{ !cancelled() && steps.debugbuild.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: windows-debug-console${{ steps.ver.outputs.PYSIDETAG }}
-          path: dist_debug/小丸工具箱
+          name: windows-debug-console
+          path: dist_debug/XiaoWanToolbox
           if-no-files-found: error
 
       - name: Upload to release (tag only)
-        if: startsWith(github.ref, 'refs/tags/') && matrix.pyside == '6.12'
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           $tag = $env:GITHUB_REF_NAME
           gh release view $tag 2>$null
