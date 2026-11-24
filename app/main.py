@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
 
     startup_log("创建主窗口")
     window = MainWindow(ctx)
+    startup_log("调用 show()（原生窗口创建 + 首帧绘制）")
     window.show()
     startup_log("主窗口已显示，进入事件循环")
     try:

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout,
 from .. import __version__
 from ..context import AppContext
 from ..core.task import TaskStatus
-from ..core.utils import ffmpeg_install_hint, platform_label
+from ..core.utils import ffmpeg_install_hint, platform_label, startup_log
 from .pages.audio import AudioPage
 from .pages.compress import CompressPage
 from .pages.downmix import DownmixPage
@@ -54,14 +54,21 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         layout.addWidget(self._build_sidebar())
+        startup_log("侧栏构建完成")
 
         self.stack = QStackedWidget()
         self.compress_page = CompressPage(ctx)
+        startup_log("视频压缩页构建完成")
         self.audio_page = AudioPage(ctx)
+        startup_log("音频提取页构建完成")
         self.downmix_page = DownmixPage(ctx)
+        startup_log("声道下混页构建完成")
         self.remux_page = RemuxPage(ctx)
+        startup_log("封装混流页构建完成")
         self.queue_page = QueuePage(ctx)
+        startup_log("任务队列页构建完成")
         self.settings_page = SettingsPage(ctx)
+        startup_log("设置页构建完成")
         for page in (self.compress_page, self.audio_page, self.downmix_page,
                      self.remux_page, self.queue_page, self.settings_page):
             self.stack.addWidget(self._wrap_scroll(page))
@@ -77,6 +84,7 @@ class MainWindow(QMainWindow):
         self._restore_geometry()
         self._refresh_env_badge()
         self.go_to(0)
+        startup_log("主窗口构造完成")
 
     # ------------------------------------------------------------------ #
     @staticmethod

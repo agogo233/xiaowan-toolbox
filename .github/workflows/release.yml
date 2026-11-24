@@ -40,6 +40,12 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 40
+    # PySide6 版本对照：6.12 为当前版本；6.8 为 LTS 对照，
+    # 用于区分"Qt 版本回归"与"用户机器环境"两类启动崩溃
+    strategy:
+      fail-fast: false
+      matrix:
+        pyside: ['6.12', '6.8']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,7 +57,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pyinstaller pillow
+        run: pip install "PySide6-Essentials==${{ matrix.pyside }}.*" "imageio-ffmpeg>=0.4.9" pyinstaller pillow
 
       - name: Resolve version (tag must match app/__init__.py)
         id: ver
@@ -70,6 +76,9 @@ jobs:
           }
           Add-Content $env:GITHUB_OUTPUT "VERSION=$ver"
           Add-Content $env:GITHUB_OUTPUT "SUFFIX=$suffix"
+          $pysideTag = ''
+          if ('${{ matrix.pyside }}' -eq '6.8') { $pysideTag = '-pyside68' }
+          Add-Content $env:GITHUB_OUTPUT "PYSIDETAG=$pysideTag"
 
       - name: Download ffmpeg and verify sha256
         run: |
@@ -149,11 +158,12 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: windows-smoke-screenshots
+          name: windows-smoke-screenshots${{ steps.ver.outputs.PYSIDETAG }}
           path: _shots_ci
           if-no-files-found: ignore
 
       - name: Pack portable zip
+        if: matrix.pyside == '6.12'
         run: |
           $distDir = (Get-ChildItem dist -Directory | Select-Object -First 1).FullName
           if (-not $distDir) { Write-Error 'dist 下没有产物目录'; exit 1 }
@@ -168,6 +178,7 @@ jobs:
           SUFFIX: ${{ steps.ver.outputs.SUFFIX }}
 
       - name: Build installer (Inno Setup)
+        if: matrix.pyside == '6.12'
         run: |
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { Write-Error 'choco 安装 Inno Setup 失败'; exit 1 }
@@ -191,11 +202,12 @@ jobs:
       - name: Upload artifact (portable dir)
         uses: actions/upload-artifact@v4
         with:
-          name: XiaoWanToolbox-${{ steps.ver.outputs.VERSION }}${{ steps.ver.outputs.SUFFIX }}-portable-win64
+          name: XiaoWanToolbox-${{ steps.ver.outputs.VERSION }}${{ steps.ver.outputs.SUFFIX }}${{ steps.ver.outputs.PYSIDETAG }}-portable-win64
           path: dist/小丸工具箱
           if-no-files-found: error
 
       - name: Upload artifact (installer)
+        if: matrix.pyside == '6.12'
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
@@ -207,12 +219,12 @@ jobs:
         if: ${{ !cancelled() && steps.debugbuild.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: windows-debug-console
+          name: windows-debug-console${{ steps.ver.outputs.PYSIDETAG }}
           path: dist_debug/小丸工具箱
           if-no-files-found: error
 
       - name: Upload to release (tag only)
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && matrix.pyside == '6.12'
         run: |
           $tag = $env:GITHUB_REF_NAME
           gh release view $tag 2>$null
