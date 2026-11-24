@@ -123,29 +123,35 @@ jobs:
           $exe = 'dist/小丸工具箱/小丸工具箱.exe'
           if (-not (Test-Path $exe)) { Write-Error "找不到 $exe"; exit 1 }
           if (-not (Test-Path 'dist/小丸工具箱/_internal')) { Write-Error 'onedir 布局不完整：缺少 _internal'; exit 1 }
-          $p = Start-Process -FilePath $exe -PassThru -WorkingDirectory 'dist/小丸工具箱'
-          Start-Sleep -Seconds 12
-          # crash.log 由 run.py 的 _crash_report 经 data_dir() 写到 %APPDATA%\XiaoWanToolbox\
-          $log = Join-Path $env:APPDATA 'XiaoWanToolbox/crash.log'
-          $fail = ''
-          if ($p.HasExited) {
-            $fail = "进程启动后 12 秒内退出，退出码 $($p.ExitCode)（若为 -1073740791 即 0xC0000409 原生 fail-fast）"
-          } elseif (Test-Path $log) {
-            $fail = '进程仍存活但已生成 crash.log（启动失败弹窗模态阻塞中）'
-            Stop-Process -Id $p.Id -Force
-          }
-          if ($fail) {
-            if (Test-Path $log) {
-              Write-Host '----- crash.log（前 40 行）-----'
-              Get-Content $log -Encoding UTF8 | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
-            } else {
-              Write-Host '（无 crash.log：原生层崩溃，以退出码为准）'
+          # verify_exe.py 会启动 exe、按 PID 等待可见主窗口出现（60 秒超时）
+          # 并截图——只查"进程存活"会放行"活着但没窗口"的坏包
+          python tests/verify_exe.py $exe _shots_ci
+          if ($LASTEXITCODE -ne 0) {
+            $slog = Join-Path $env:APPDATA 'XiaoWanToolbox/startup.log'
+            if (Test-Path $slog) {
+              Write-Host '----- startup.log -----'
+              Get-Content $slog -Encoding UTF8 | ForEach-Object { Write-Host $_ }
             }
-            Write-Error "启动冒烟测试失败：$fail"
+            Write-Error '启动冒烟测试失败：进程退出，或 60 秒内未出现窗口'
             exit 1
           }
-          Write-Host '启动冒烟测试通过：进程存活且无 crash.log'
-          Stop-Process -Id $p.Id -Force
+          # 双保险：确认没有 crash.log（verify_exe 提前退出分支已打印其内容）
+          $log = Join-Path $env:APPDATA 'XiaoWanToolbox/crash.log'
+          if (Test-Path $log) {
+            Write-Host '----- crash.log（前 40 行）-----'
+            Get-Content $log -Encoding UTF8 | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
+            Write-Error '启动冒烟测试失败：已生成 crash.log（启动失败弹窗模态阻塞中）'
+            exit 1
+          }
+          Write-Host '启动冒烟测试通过：窗口已出现、进程存活且无 crash.log'
+
+      - name: Upload smoke screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-screenshots
+          path: _shots_ci
+          if-no-files-found: ignore
 
       - name: Pack portable zip
         run: |
@@ -198,7 +204,7 @@ jobs:
 
       # 冒烟测试失败时也要拿到诊断版：只要 debug 构建成功就上传
       - name: Upload artifact (debug console)
-        if: always() && steps.debugbuild.outcome == 'success'
+        if: ${{ !cancelled() && steps.debugbuild.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-debug-console

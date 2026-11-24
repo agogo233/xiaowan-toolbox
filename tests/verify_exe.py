@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+from PIL import Image  # 顶部导入：缺依赖应直接报错，而不是静默跳过截图
+
 ROOT = Path(__file__).resolve().parents[1]
 TITLE = "小丸工具箱"
 
@@ -54,8 +56,6 @@ def _find_window_for_pid(target_pid: int) -> int:
 
 def _capture_window(hwnd: int, w: int, h: int):
     """PrintWindow 直接抓取目标窗口内容，即使被其他窗口遮挡也能截到。"""
-    from PIL import Image
-
     user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
     hdc = user32.GetWindowDC(hwnd)
     mem = gdi32.CreateCompatibleDC(hdc)
@@ -118,6 +118,11 @@ def main() -> int:
             if log.is_file():
                 print("\n--- crash.log ---")
                 print(log.read_text(encoding="utf-8", errors="replace")[-2500:])
+            slog = Path.home() / "AppData" / "Roaming" / "XiaoWanToolbox" / "startup.log"
+            if slog.is_file():
+                # 原生崩溃（如 0xC0000409）无 crash.log，死前最后一行 startup.log 是唯一锚点
+                print("\n--- startup.log ---")
+                print(slog.read_text(encoding="utf-8", errors="replace"))
             return 1
         hwnd = _find_window_for_pid(proc.pid)
         if hwnd:
@@ -146,11 +151,15 @@ def main() -> int:
 
     w, h = rect.right - rect.left, rect.bottom - rect.top
     if w > 0 and h > 0:
-        crop = out_dir / "exe_窗口.png"
-        _capture_window(hwnd, w, h).convert("RGB").save(crop)
-        print(f"✓ 窗口截图（PrintWindow）：{crop}")
+        try:
+            crop = out_dir / "exe_窗口.png"
+            _capture_window(hwnd, w, h).convert("RGB").save(crop)
+            print(f"✓ 窗口截图（PrintWindow）：{crop}")
+        except Exception as exc:  # noqa: BLE001
+            # 截图失败不代表窗口没出来：只在 CI 环境受限时降级为警告
+            print(f"! 窗口截图失败（不影响判定）：{exc!r}")
 
-    # 活着且渲染成功，收工
+    # 活着且窗口已出现，截图；截图失败只降级为警告
     time.sleep(0.5)
     still_alive = proc.poll() is None
     print(f"✓ 截图后进程仍在运行：{still_alive}")

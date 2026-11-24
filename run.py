@@ -56,18 +56,36 @@ def _crash_report(exc: BaseException) -> None:
             pass
 
 
+def _log(msg: str, restart: bool = False) -> None:
+    """启动日志的安全包装：utils 导入失败也不能影响启动本身。"""
+    try:
+        from app.core.utils import startup_log
+
+        startup_log(msg, restart=restart)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> int:
+    _log("run.py 启动", restart=True)
+    _log("开始导入 app.main")
     try:
         from app.main import main as app_main
-    except ImportError as exc:  # pragma: no cover
+    except BaseException as exc:  # noqa: BLE001  导入期任何异常都不能静默裸退
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        _log(f"导入 app.main 失败：{exc!r}")
         if getattr(sys, "frozen", False):
-            # 打包后的 exe 里缺模块属于严重缺陷：写 crash.log 并弹窗，
+            # 打包后的 exe 里缺模块/导入期异常属于严重缺陷：写 crash.log 并弹窗，
             # 绝不能静默退出（否则用户双击后"什么都没发生"无从排查）
             _crash_report(exc)
-        else:
+        elif isinstance(exc, ImportError):
             print("依赖缺失：", exc)
             print("请先执行：pip install -r requirements.txt")
+        else:
+            raise
         return 1
+    _log("app.main 导入完成")
     try:
         return app_main()
     except BaseException as exc:  # noqa: BLE001

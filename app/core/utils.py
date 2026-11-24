@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 APP_NAME = "XiaoWanToolbox"
@@ -123,6 +124,22 @@ def data_dir() -> Path:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_NAME
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def startup_log(msg: str, restart: bool = False) -> None:
+    """启动分阶段日志（data_dir/startup.log）。
+
+    原生崩溃（如 0xC0000409 fail-fast）无法被 Python 捕获、不留 traceback，
+    但「死前最后写入的一行」就是定位崩溃阶段的锚点：
+    停在导入 = Qt DLL 加载期；停在 QApplication = 平台插件/IME 初始化；等等。
+    restart=True 时重开文件，每次启动覆盖旧日志。
+    """
+    try:
+        with (data_dir() / "startup.log").open(
+                "w" if restart else "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:  # noqa: BLE001
+        pass  # 日志失败绝不能反过来弄死启动
 
 
 def config_path() -> Path:
