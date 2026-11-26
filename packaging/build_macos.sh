@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 小丸工具箱 · Mac 版 —— 一键构建脚本（必须在 macOS 上执行）
+# 小丸工具箱 · Mac 版 —— 构建脚本（必须在 macOS 上执行）
+#
+# ⚠️ 日常请直接双击仓库根目录的「打包小丸工具箱.command」——
+#    那个脚本把本文件的所有步骤 + zip 分发都做完了。
+#    本文件保留给「想在终端里分步控制」的场景。
 #
 # 产物：
 #   dist/小丸工具箱.app          独立应用，双击即用
@@ -76,7 +80,7 @@ echo "==> 4/6 PyInstaller 打包"
 rm -rf "dist/$APP_NAME.app"
 mv "dist/$APP_NAME" "dist/$APP_NAME.app"
 
-echo "==> 5/6 清理临时转储"
+echo "==> 5/6 临时签名"
 if [ -x "dist/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
   codesign --force --deep --sign - "dist/$APP_NAME.app" 2>/dev/null || true
 fi

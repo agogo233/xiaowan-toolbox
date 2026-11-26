@@ -3,39 +3,111 @@
 Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS / Windows 共用一套代码**。
 基于 **PySide6 (Qt 6) + FFmpeg**，原生桌面风格，支持浅色 / 深色主题。
 
+> 本项目 fork 自 [52ting/xiaowan-toolbox](https://github.com/52ting/xiaowan-toolbox)
+> （原版小丸工具箱跨平台重制版 1.2.4），在此基础上重构并继续开发至 2.2.0：
+> 按文件大小页重做、试压、后台运行、用途一键配置、AV1 硬件编码、
+> Web 端兼容性体系，以及 macOS 离线打包方案。
+> 感谢原作者的奠基工作。
+
 ![压缩页](_shots/1_压缩.png)
+
+| 抽取拆分 | 封装混流 |
+| --- | --- |
+| ![抽取拆分页](_shots/2_抽取拆分.png) | ![封装混流页](_shots/4_封装.png) |
+
+| 声道下混 | 媒体信息 |
+| --- | --- |
+| ![声道下混页](_shots/3_下混.png) | ![媒体信息页](_shots/5_媒体信息.png) |
+
+<details>
+<summary>更多界面（队列 / 功能设置 / 深色主题）</summary>
+
+| 任务队列 | 功能设置 |
+| --- | --- |
+| ![任务队列页](_shots/6_队列.png) | ![功能设置页](_shots/7_功能设置.png) |
+
+![深色主题](_shots/8_深色主题.png)
+
+</details>
 
 ## 下载安装
 
 | 平台 | 怎么装 |
 | --- | --- |
-| **Windows** | 下载 [`XiaoWanToolbox-1.2.4-Setup.exe`](https://github.com/52ting/xiaowan-toolbox/releases/latest)（体积以 Release 页资产为准）双击安装。默认装到当前用户目录、**不需要管理员权限**，自动建开始菜单与桌面快捷方式，控制面板里能正常卸载。自带 ffmpeg，装完直接能用 |
-| **macOS** | 官方不提供现成 `.app`，需要在本机跑一次构建（约 2–5 分钟），见下方 [macOS 章节](#macos)。产出的 `.app` 自带 ffmpeg，可随意拷给别人 |
+| **Windows** | 下载 [`XiaoWanToolbox-2.2.0.exe`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest)（约 208 MB，单文件免安装）双击即用。**自带 ffmpeg**，装完直接能用 |
+| **macOS** | 下载 [`XiaoWanToolbox-2.2.0-mac.zip`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest)，解压后双击「打包小丸工具箱.command」生成 `.app`（约 3–8 分钟，全程离线）。包里自带两架构 ffmpeg，**不需要装 Homebrew** |
 
-全部版本与下载：<https://github.com/52ting/xiaowan-toolbox/releases>
+### 不想带 ffmpeg 的小体积版
 
-> 发布包用英文名（`XiaoWanToolbox-…`）是必须的：GitHub Release 会剥掉资产名里的
-> 非 ASCII 字符，中文名会被削成 `-1.2.4-.exe`。程序本身的界面、窗口标题全是中文。
+如果**本机已经装了 ffmpeg**（或在 `PATH` 里），可以下载这两个精简版，体积小很多：
+
+| 平台 | 文件 | 大小 | 前提 |
+| --- | --- | --- | --- |
+| Windows | [`XiaoWanToolbox-2.2.0-lite.exe`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest) | 约 **37 MB** | 本机有 ffmpeg（`PATH` 里能找到），或在「功能设置」里指定路径 |
+| macOS | [`XiaoWanToolbox-2.2.0-mac-lite.zip`](https://github.com/axutongxue/xiaowan-toolbox/releases/latest) | 约 **178 MB** | 出包那台 mac 上有 ffmpeg（`brew install ffmpeg`） |
+
+精简版启动更快（Windows 版不用每次解压 460 MB 的 ffmpeg），但**首次打开会显示「未找到 ffmpeg」**，到「功能设置」里指定路径即可。
+
+全部版本与下载：<https://github.com/axutongxue/xiaowan-toolbox/releases>
+
+> 🔴 **发布包必须用英文名**（如 `XiaoWanToolbox-2.2.0.exe`）：GitHub Release 会剥掉
+> 资产名里的非 ASCII 字符，中文名 `小丸工具箱-2.2.0.exe` 会被削成 `-2.2.0-.exe`。
+> 程序本身的界面、窗口标题、安装后的快捷方式全是中文，不受影响。
+
+## ffmpeg 从哪来
+
+**本项目的发布包自带 ffmpeg**（Windows 单文件 208 MB 里有 219 MB 是它，压缩后约 180 MB）。
+
+但也有兜底：如果把 `bin/`（Windows）或 `bin_mac/`（mac）里的二进制删掉再打包，
+产物就不带 ffmpeg，程序启动时按下面的顺序自动找，找到就用：
+
+1. 「设置」页手动指定的路径
+2. 环境变量 `XIAOWAN_FFMPEG` / `XIAOWAN_FFPROBE`
+3. **程序目录下的 `bin/ffmpeg`**（想内置的话把文件放这儿再打包即可）
+4. 系统 `PATH`
+5. **macOS 常见安装位置**：`/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin`
+   （Finder 双击 .app 时 PATH 很窄，所以这几个目录是硬编码查找的）
+6. `imageio-ffmpeg` 包自带的静态 ffmpeg（兜底，仅 ffmpeg 本体）
+
+**没找到也不会崩**：侧栏会显示「● 未找到 ffmpeg」，点进「设置」即可手动指定路径。
+
+安装方式：
+
+| 平台 | 命令 |
+| --- | --- |
+| Windows | 从 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 或 [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) 下 `ffmpeg.exe` / `ffprobe.exe`，放进任意目录并加入 `PATH`，或在「设置」里指定 |
+| macOS | `brew install ffmpeg` |
+| Linux | `sudo apt install ffmpeg`（或发行版对应命令）|
+
+> 需要 **ffprobe** 才能快速读取媒体信息；只有 ffmpeg 时会降级用 `ffmpeg -i` 解析，
+> 功能不变，只是首次扫描大文件稍慢。Homebrew / 官方构建通常两者都有。
 
 ## 功能
 
 | 模块 | 说明 |
 | --- | --- |
-| **视频压缩** | H.264 / H.265 软编 + 硬件加速（Mac: VideoToolbox，Win: NVENC / QSV / AMF）；CRF 恒定质量、指定码率、指定目标体积（自动二次编码）；一键预设 8 套；分辨率 / 帧率 / 音轨裁剪；输出体积实时预估 |
-| **音频提取** | MP3 / AAC(M4A) / FLAC / WAV / Opus，支持原样复制音轨、采样率与声道转换 |
+| **视频压缩** | 两个平级页签：**按常用预设**（一键方案，8 套）与 **按文件大小**（指定目标体积）。H.264 / H.265 / AV1 软编 + 硬件加速（Mac: VideoToolbox，Win: NVENC / QSV / AMF，含 AV1 硬件编码）；CRF 恒定质量、指定码率；分辨率 / 帧率 / 音轨裁剪；输出体积实时预估。<br>**按文件大小**专为「必须放进某个限额」设计：编码前先做可行性预检（算得出目标做不到就直接拦下并给建议）、超标自动降码率重跑（严格档逐字节保证不超过），并给出画质评估与降分辨率建议<br>**试压**：用当前全部参数只压中间 20 秒（5~60 秒可选），十几秒看到效果再决定压不压整片<br>**我要拿去**：一键按用途配好参数——「要发给别人 / 放网页」（H.264 8bit，谁都能播）或「只在自己电脑看」（AV1，同画质省一半体积） |
+| **抽取拆分** | 把源文件的**画面 / 音轨 / 字幕**分别拆成独立文件，**可多选**（勾 3 条流产出 3 个文件）。全部 `copy` 不重编码，拆出来的内容与源文件完全一致，秒级完成。命名带类型和序号（`课件_画面.mkv` / `课件_音轨1.m4a` / `课件_字幕1.srt`）；音频扩展名跟着源编码走（AAC→m4a、AC3→ac3、FLAC→flac，未知→mka）；字幕文本格式转 srt，**PGS 图形字幕原样抽成 .sup** |
 | **声道下混** | 5.1 / 7.1 多声道 → 立体声 / 单声道，画面原样复制不重编码；5 套一键方案（标准 / 对白清晰 / 环绕氛围 / 夜间小声 / 单声道）；中置、环绕、低音炮三路增益独立可调；EBU R128 响度标准化、对白动态压缩、防削波限幅；**输出体积实时预估**（不再被「成品怎么这么小」吓到） |
 | **多轨合并下混** | 拆成多个单声道的素材（如 5.1 的 前左/前右/中置/低音炮/后左/后右 六个文件）合成一条多声道再下混，**只产出一个文件**；文件表直接标出每路声道槽位，文件名里的 FL / 前左 / Ls / Rs 等标记可一键自动排序；顺序与槽位不符时开始前弹窗提醒并可一键纠正；各路时长不齐时自动补齐，不会被最短那路截断 |
-| **封装混流** | MP4 / MKV / MOV 换壳（不重编码，秒级完成）；挑音轨、嵌入同名字幕（.srt/.ass/.vtt）、faststart |
+| **封装混流** | MP4 / MKV / MOV 换壳（不重编码，秒级完成）；挑音轨、嵌入同名字幕（.srt/.ass/.vtt）、faststart。**音轨编码可转 AAC / MP3 / Opus / FLAC**，并可改采样率与声道（copy 时这三项自动禁用）。<br>**添加封面**（默认关闭）：用同名图片（每文件各用各的）或指定一张兜底，写进 MP4 的 `covr` 原子 —— **同时影响播放器海报和 Windows 资源管理器缩略图**，全程不重编码。MKV 只能挂附件（播放器可见、缩略图不变），MOV / WebM 不支持，界面会按容器给出对应说明并可一键改用 MP4 |
+| **媒体信息** | 拖入视频或音频，一屏看到全部参数：容器 / 总码率 / 时长、视频的编码与 profile·level、分辨率、画面比例、像素宽高比、帧率（恒定/可变）、色彩空间与色度抽样、位深度、扫描方式、流大小占比、总帧数、编码时间，音频的编码·profile·声道·采样率·位深度·码率模式，以及字幕轨与色彩元数据。<br>纯音频（FLAC / MP3 等）同样支持；可一键复制成纯文本，或「拿去压缩」直接跳到压缩页 |
 | **任务队列** | 批量拖拽、实时进度 / 速度 / 剩余时间、并发数可调、取消与重试、失败原因用人话提示 |
-| **设置** | ffmpeg 路径自动检测（内置 / PATH / 系统常见位置 / 手动指定）、输出目录与命名规则、主题 |
+| **功能设置** | ffmpeg 路径自动检测（内置 / PATH / 系统常见位置 / 手动指定）、输出目录与命名规则、主题、**后台运行**（把 ffmpeg 降到低优先级，压片时你用电脑不卡；空闲时仍全速，不牺牲速度） |
 
 ---
 
 ## Windows
 
-### 方式一：安装程序（推荐）
+### 方式一：单文件 exe（推荐）
 
-下载 `XiaoWanToolbox-1.2.4-Setup.exe` 双击，按向导走完即可。
+下载 `XiaoWanToolbox-2.2.0.exe`（约 208 MB，单文件免安装）双击即用，自带 ffmpeg。
+每次启动会先解压内置 ffmpeg，首次启动稍慢几秒（之后有缓存）。
+
+### 方式二：安装程序（备选）
+
+仓库保留了 Inno Setup 脚本，想做成传统安装器也可以：
+`ISCC.exe packaging\xiaowan_setup.iss` 产出 `installer_out\XiaoWanToolbox-2.2.0-Setup.exe`。
 不写注册表脏数据、不装服务，卸载就是删目录 + 删快捷方式。
 
 安装程序长这样（Inno Setup 打包）：
@@ -47,12 +119,14 @@ Windows 上经典视频压缩工具「小丸工具箱」的重制版，**macOS /
 > 默认装到 `%LOCALAPPDATA%\Programs\小丸工具箱`，全程无需管理员权限。
 > 想装给所有用户就在命令行加 `/ALLUSERS`。
 
-### 方式二：免安装（便携）
+### 方式二：目录式（便携）
 
-双击 `dist/XiaoWanToolbox/XiaoWanToolbox.exe`。
-**自带 ffmpeg，不需要装任何东西**；整个文件夹拷给别人也能直接用。
-（exe 文件名用 ASCII——部分中文 Windows 上双击中文名 exe 会原生崩溃，
-程序窗口标题仍是"小丸工具箱"。）
+`python packaging\build_windows.py --onedir` 打出 `dist\XiaoWanToolbox\` 目录，
+启动更快（不用每次解压）。若打包时 `bin\ffmpeg.exe` 在场，整个文件夹拷给别人
+也能直接用；否则对方同样需要自己装 ffmpeg。
+
+> （exe 文件名用 ASCII——部分中文 Windows 上双击中文名 exe 会原生崩溃，
+> 程序窗口标题仍是"小丸工具箱"。）
 
 ### 从源码运行
 
@@ -66,11 +140,12 @@ python -m venv .venv
 
 ```bat
 pip install pyinstaller pillow
-python packaging\build_windows.py --clean
+python packaging\build_windows.py            # 默认单文件
+python packaging\build_windows.py --onedir   # 目录式（启动更快）
 ```
 
 脚本会：检查 / 准备 `bin\ffmpeg.exe` → 生成 `icon.ico` → PyInstaller 打包
-→ 输出到 `dist\XiaoWanToolbox\`。
+→ 输出到 `dist\XiaoWanToolbox.exe`（单文件）或 `dist\XiaoWanToolbox\`（目录式）。
 
 > `bin\ffmpeg.exe` 不入库（太大），获取方式见 [`bin/README.md`](bin/README.md)。
 > 没有它也能打包，只是产物不自带 ffmpeg。
@@ -81,7 +156,7 @@ python packaging\build_windows.py --clean
 ISCC.exe packaging\xiaowan_setup.iss
 ```
 
-产物：`installer_out\XiaoWanToolbox-1.2.4-Setup.exe`。
+产物：`installer_out\XiaoWanToolbox-2.2.0-Setup.exe`。
 需要 [Inno Setup 6](https://jrsoftware.org/isdl.php)（用 winget 装也行：
 `winget install -e --id JRSoftware.InnoSetup`）。
 脚本会读取 `packaging\ChineseSimplified.isl`，中文界面对外可用，无需额外装语言包。
@@ -105,10 +180,29 @@ SHA-256 校验；升级 ffmpeg 只需改
 
 ## macOS
 
-macOS 上没有现成的 `.app` 可以直接下载，需要**在本机跑一次构建**（约 2–5 分钟）。
-构建产物 `小丸工具箱.app` 自带 ffmpeg，之后可以随意拷贝到别的 Mac 上用。
+macOS 上不提供现成的 `.app`（未做 Apple 公证，跨机分发体验不好），需要**在本机跑一次构建**。
 
-### 0. 前置条件（只做一次）
+### 方式一：离线打包 zip（推荐）
+
+从 [Releases](https://github.com/axutongxue/xiaowan-toolbox/releases) 下载
+**`XiaoWanToolbox-2.2.0-mac.zip`**，解压后在**终端**里：
+
+```bash
+cd ~/Downloads/xiaowan-toolbox    # 换成你实际解压的位置
+bash 打包小丸工具箱.command
+```
+
+**pip 全程不联网** —— 包里预置了全部 Python 依赖 wheel（约 179 MB，含两个架构的
+imageio-ffmpeg）。约 3~8 分钟后得到 `dist/小丸工具箱.app` 和 `dist/小丸工具箱.zip`。
+
+包里还预置了 **两架构的 ffmpeg/ffprobe**（arm64 + x86_64），脚本会按本机架构
+复制进 `.app` —— 产物自带 ffmpeg，拷给别的 Mac 也能直接跑。
+
+唯一前提：本机有 Python 3.10+（macOS 12.3+ 自带 `python3` 通常够用）。
+
+### 方式二：源码构建（会自己装 Homebrew 的 ffmpeg）
+
+#### 0. 前置条件（只做一次）
 
 ```bash
 # 命令行工具（提供 python3 / git 等，若已装过会提示 already installed）
@@ -124,15 +218,14 @@ brew install ffmpeg
 > Intel 芯片路径是 `/usr/local/bin`，Apple Silicon（M 系列）是 `/opt/homebrew/bin`，
 > 程序两者都会自动找，不用手动配 PATH。
 
-### 1. 解压源码包
-
-双击 `小丸工具箱-Mac源码包.zip` 解压，然后在**终端**里进入这个目录：
+#### 1. 拿到源码
 
 ```bash
-cd ~/Downloads/xiaowan-mac        # 换成你实际解压的位置
+git clone https://github.com/axutongxue/xiaowan-toolbox.git
+cd xiaowan-toolbox
 ```
 
-### 2. 方式一：直接跑源码（最快，适合先试一下）
+#### 2. 直接跑源码（最快，适合先试一下）
 
 ```bash
 python3 -m venv .venv
@@ -148,7 +241,7 @@ echo ".venv/bin/python run.py" > 启动.command && chmod +x 启动.command
 ```
 以后双击目录里的 `启动.command` 就能开。
 
-### 3. 方式二：打成独立 .app（推荐，可拷贝分享）
+#### 3. 打成独立 .app（可拷贝分享）
 
 ```bash
 bash packaging/build_macos.sh          # 生成 dist/小丸工具箱.app
@@ -159,18 +252,21 @@ bash packaging/build_macos.sh --dmg    # 顺便生成 dist/小丸工具箱.dmg
 复制进 `bin/` → 用 `sips`+`iconutil` 生成应用图标 → PyInstaller 打包 → 本地临时签名。
 
 完成后把 `dist/小丸工具箱.app` 拖进「应用程序」文件夹即可。
-**这个 .app 里已经带了 ffmpeg，拷到没装过 Homebrew 的 Mac 上也能直接跑。**
+
+> **两种 mac 构建方式的区别**：
+> `build_macos.sh`（本节）默认**把 ffmpeg 复制进 .app**（`.app` 约 165 MB，拷给别人能直接用）；
+> 加 `--no-ffmpeg` 则与上面「方式一」的 `.command` 一致 —— 不带 ffmpeg，靠运行时检测。
 
 构建常见卡点：
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
-| `未找到 ffmpeg` 并退出 | 忘了 `brew install ffmpeg`；或想跳过内置：`bash packaging/build_macos.sh --no-ffmpeg`（那台机器要自己装 ffmpeg） |
+| `未找到 ffmpeg` 并退出 | 这是 `build_macos.sh`（默认会内置 ffmpeg）的报错：`brew install ffmpeg`，或加 `--no-ffmpeg` 改成不内置<br>（用 `打包小丸工具箱.command` 时不会报错退出，只会警告） |
 | `command not found: python3` | 先跑 `xcode-select --install` |
 | 卡在 `pip install` | 网络问题，可换源：`export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` |
 | `sips` / `iconutil` 报错 | 这两个是 macOS 自带工具，报错一般是上一步的 `icon.png` 没生成，重跑一次即可（图标本来也不是必需） |
 
-### 4. 首次打开被 Gatekeeper 拦下怎么办
+#### 4. 首次打开被 Gatekeeper 拦下怎么办
 
 因为没做苹果开发者公证，第一次双击（尤其是从别的 Mac 拷过来的）可能出现
 「无法打开，因为 Apple 无法检查其是否包含恶意软件」。任选一种放行：
@@ -185,14 +281,14 @@ xattr -cr "/Applications/小丸工具箱.app"     # 推荐：清掉隔离标记
 > 如果 .app 是从压缩包/网络传过来的，`xattr -cr` 基本上是必做的一步；
 > 偶尔还会遇到「已损坏」提示，同一条命令也能解决。
 
-### 5. 卸载
+#### 5. 卸载
 
-- 源码运行：删掉解压出来的 `xiaowan-mac` 整个文件夹即可。
+- 源码运行：删掉解压出来的 `xiaowan-toolbox` 整个文件夹即可。
 - .app：把「应用程序」里的 `小丸工具箱.app` 拖进废纸篓。
 - 配置残留（输出目录、主题、上次的预设）在 `~/Library/Application Support/XiaoWanToolbox/`，
   想彻底清干净就一并删掉。
 
-### 6. 用起来和 Windows 版一样吗
+#### 6. 用起来和 Windows 版一样吗
 
 一样，只是两点平台差异：
 
@@ -226,7 +322,7 @@ AMF 用 `-quality` + `-rc cqp`，VideoToolbox 用 `-prio_speed` / `-q:v`。
 ## 项目结构
 
 ```
-xiaowan-mac/
+xiaowan-toolbox/
 ├── run.py                    # 启动入口（含崩溃兜底：无控制台 exe 也能留日志/弹窗）
 ├── requirements.txt
 ├── LICENSE                   # MIT（另附 FFmpeg / Qt 第三方组件说明）
@@ -248,13 +344,25 @@ xiaowan-mac/
 │       ├── main_window.py    # 侧边栏 + 页面栈
 │       ├── style.py          # 浅色/深色两套 QSS
 │       ├── widgets.py        # 拖拽文件表、进度绘制、卡片
-│       └── pages/            # 压缩 / 音频 / 下混 / 封装 / 队列 / 设置
+│       └── pages/            # 压缩 / 抽取拆分 / 下混 / 封装 / 媒体信息 / 队列 / 功能设置
 ├── tests/
-│   ├── smoke_test.py         # 端到端：链路 + 探测 + 边界（36 项断言）
+│   ├── smoke_test.py         # 端到端：链路 + 探测 + 边界（40 项断言）
+│   ├── extract_test.py       # 抽取拆分：多流勾选/命名/扩展名/字幕/copy 无损（42 项断言）
+│   ├── extra_audio_test.py   # 额外音频：四种对齐模式/输入索引/时长不变（34 项断言）
+│   ├── fps_test.py           # 帧率：9 档完整/精确分数/实际编码核对（40 项断言）
+│   ├── cover_test.py         # 封面：同名匹配/优先级/容器能力/实际封装（39 项断言）
+│   ├── cover_ui_test.py      # 封面：主开关/告警时机/一键改容器（35 项断言）
+│   ├── media_info_test.py    # 媒体信息：字段推导/对齐/文本输出（69 项断言）
+│   ├── size_test.py          # 目标体积：两遍 ABR/硬件 CQP/修正循环（108 项断言）
+│   ├── size_tab_test.py      # 按文件大小页：门控/QP 量程/试压菜单（274 项断言）
+│   ├── encoder_speed_test.py # 编码器门控 + 硬件探测 + AMD AV1（119 项断言）
 │   ├── downmix_test.py       # 声道下混：布局/矩阵/命令/合并/体积预估（98 项断言）
 │   ├── downmix_e2e_test.py   # 声道下混：真跑 ffmpeg 验证混音结果（53 项断言）
 │   ├── merge_ui_test.py      # 多轨合并界面：前缀/排序/只产出一个任务（45 项断言）
-│   ├── engine_test.py        # 引擎：批量/进度/取消/并发（11 项断言）
+│   ├── engine_test.py        # 引擎：批量/进度/取消/并发/关机闸门（40 项断言）
+│   ├── combo_test.py         # 下拉控件：面板/键盘/禁用项（27 项断言）
+│   ├── disabled_look_test.py # 禁用态视觉：不能只靠文字变淡（16 项断言）
+│   ├── preset_chip_test.py   # 预设卡片：标题不被标签挤掉（30 项断言）
 │   ├── verify_exe.py         # 打包产物冒烟：启动 exe 并截图确认界面渲染
 │   └── screenshot.py         # 逐页自动截图
 └── packaging/
@@ -296,11 +404,18 @@ xiaowan-mac/
 ## 测试
 
 ```bash
-python tests/smoke_test.py        # 不开窗口，36 项断言
-python tests/downmix_test.py      # 声道下混静态验证，98 项断言
-python tests/downmix_e2e_test.py  # 声道下混真跑 ffmpeg，53 项断言
+python tests/smoke_test.py         # 不开窗口，36 项断言
+python tests/size_test.py          # 按文件大小：真跑 ffmpeg 验证目标体积，108 项
+python tests/size_tab_test.py      # 按文件大小页界面层，270 项
+python tests/downmix_test.py       # 声道下混静态验证，98 项断言
+python tests/downmix_e2e_test.py   # 声道下混真跑 ffmpeg，53 项断言
+python tests/extract_test.py      # 抽取拆分，42 项断言
 python tests/merge_ui_test.py 输出目录  # 多轨合并界面，45 项断言（顺带截图）
-python tests/engine_test.py       # 队列引擎，11 项断言
+python tests/engine_test.py        # 队列引擎，28 项断言
+python tests/encoder_speed_test.py # 编码器可用性与速度档，101 项断言
+python tests/preset_chip_test.py   # 预设卡片文字排布，30 项断言
+python tests/combo_test.py         # 窗口内下拉面板，27 项断言
+python tests/disabled_look_test.py # 禁用态可辨识度，16 项断言
 python tests/screenshot.py 输出目录      # 逐页截图
 python tests/verify_exe.py     # 启动打包好的 exe 并截图验证
 ```
@@ -311,7 +426,7 @@ python tests/verify_exe.py     # 启动打包好的 exe 并截图验证
 
 调用到的第三方组件另有其授权，对外分发时请一并遵守：
 
-- **FFmpeg** —— LGPL 2.1+ 或 GPL 2+/3+（取决于具体构建）。本仓库源码不含 ffmpeg
-  二进制；CI 发布产物内置的是 gyan.dev 的 **GPL** 构建，分发时请遵守 GPL 义务
-  （提供源码获取方式：<https://ffmpeg.org/download.html>）。见 <https://ffmpeg.org/legal.html>。
+- **FFmpeg** —— LGPL 2.1+ 或 GPL 2+/3+（取决于具体构建）。本仓库不分发 ffmpeg 二进制；
+  打包时若放入了 `bin\ffmpeg.exe`，请自行确认所用构建的许可并满足其义务
+  （GPL 构建需提供源码获取方式）。见 <https://ffmpeg.org/legal.html>。
 - **Qt for Python (PySide6)** —— LGPL v3。

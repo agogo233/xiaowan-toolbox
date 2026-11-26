@@ -1,0 +1,23 @@
+# 仓库内统一 LF
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.7z binary
+*.zip binary
+*.exe binary
+*.dll binary
+
+# 本地专用文件，不随 git archive / GitHub Download ZIP 分发
+# .agents/ 与 AGENTS.md：给 AI 助手的开发笔记与规范
+# .githooks/ 与 tools/：本地提交钩子和换行自检，只服务于这个仓库自己，
+#   和程序功能无关（实测「被谁引用」：只被彼此和 AGENTS.md 提到，
+#   没有任何 app/ 或 packaging/ 的功能代码依赖它们）
+.agents/ export-ignore
+AGENTS.md export-ignore
+.githooks/ export-ignore
+tools/ export-ignore

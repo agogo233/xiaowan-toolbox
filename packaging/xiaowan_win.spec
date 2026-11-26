@@ -1,39 +1,58 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置（在 Windows 上构建免安装 exe）。
+"""PyInstaller 打包配置（Windows · **单文件 onefile**）。
 
 用法（项目根目录）：
-    pyinstaller packaging/xiaowan_win.spec --noconfirm
+    python packaging/build_windows.py            # 默认走这个 spec
 
 产物：
-    dist/XiaoWanToolbox/XiaoWanToolbox.exe   双击即用，无需装 Python
-    （onedir 模式：启动快、体积可控；拷整个文件夹即可分发。
-      exe 与目录名必须用 ASCII——实测中文名 exe 在部分中文 Windows
-      上双击会原生崩溃 0xC0000409，显示名仍由程序窗口标题保留中文）
+    dist/XiaoWanToolbox.exe      单个文件，双击即用（约 460 MB，含 ffmpeg）
 
-如果仓库根目录存在 bin/ffmpeg.exe 与 bin/ffprobe.exe，会被一并打进包里，
-实现"开箱即用、无需另外安装 ffmpeg"。
+🔴 exe 名必须用 ASCII：实测中文名 exe（小丸工具箱.exe）在部分中文 Windows 上
+双击会原生崩溃（0xC0000409）；程序显示名仍由窗口标题保留中文。
+
+为什么是 onefile（AGENTS.md 的既定偏好）：
+    Windows 端用户要"一个文件就能发"，目录式得拷一整个文件夹。
+    代价是每次启动都要把运行时解压到临时目录 —— 内置 ffmpeg+ffprobe
+    就有 460 MB，实测启动明显变慢，这是明确的取舍，不是疏漏。
+
+🔴 单文件下 `sys._MEIPASS` 是**临时目录**，退出即删。所以：
+    - 配置/日志必须写用户目录（app/core/utils.data_dir() 已按 APPDATA 走，
+      不依赖 _MEIPASS），否则每次启动都是"全新安装"。
+    - 任何"记住上次状态"的文件都不能落在 exe 旁边。
+
+目录式（启动快）见 packaging/xiaowan_win_onedir.spec。
 """
 
 import os
 from pathlib import Path
 
-ROOT = Path(SPECPATH).resolve().parent          # packaging/ 的上一级
-
 # 诊断模式：XIAOWAN_CONSOLE_DEBUG=1 时构建「带控制台 + bootloader 调试日志」的版本，
-# 用于排查“双击没反应”一类启动问题（CI 里的 windows-debug-console artifact）。
+# 用于排查"双击没反应"一类启动问题（CI 里的 windows-debug-console artifact）。
 # 该版本在 cmd 里运行会把 PyInstaller 每一步（找 Python DLL / 加载 PYZ / 初始化 /
 # import 脚本）的进度打到控制台，死在哪一步一目了然。
 DEBUG_CONSOLE = os.environ.get("XIAOWAN_CONSOLE_DEBUG") == "1"
+
+ROOT = Path(SPECPATH).resolve().parent          # packaging/ 的上一级
 bin_dir = ROOT / "bin"
 ffmpeg = bin_dir / "ffmpeg.exe"
 ffprobe = bin_dir / "ffprobe.exe"
 ico = ROOT / "packaging" / "icon.ico"
 
-datas = [(str(ROOT / "app" / "resources" / "icon.png"), "app/resources")]
-if ffmpeg.is_file():
-    datas.append((str(ffmpeg), "bin"))
-if ffprobe.is_file():
-    datas.append((str(ffprobe), "bin"))
+datas = [(str(ROOT / "app" / "resources" / "icon.png"), "app/resources"),
+        (str(ROOT / "app" / "resources" / "qrcode.png"), "app/resources")]
+
+# 是否内置 ffmpeg。默认内置，可用**环境变量**关掉，避免为次需求再维护
+# 一份 spec（两份 spec 迟早会漂移，改了一处忘另一处更难查）：
+#     PowerShell:  $env:XIAOWAN_NO_FFMPEG=1; python -m PyInstaller ...
+#     bash:        XIAOWAN_NO_FFMPEG=1 python -m PyInstaller ...
+# 关掉后产物约 40 MB，用户需自备 ffmpeg（「功能设置」里指定路径或放 PATH）。
+# 注意 build_windows.py --no-ffmpeg 就是设置这个变量后再调用 PyInstaller。
+_NO_FFMPEG = os.environ.get("XIAOWAN_NO_FFMPEG", "").strip() not in ("", "0", "false", "False")
+if not _NO_FFMPEG:
+    if ffmpeg.is_file():
+        datas.append((str(ffmpeg), "bin"))
+    if ffprobe.is_file():
+        datas.append((str(ffprobe), "bin"))
 
 # 只保留真正用到的 Qt 模块，其余整块排除，能砍掉上百 MB
 EXCLUDES = [
@@ -67,26 +86,20 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# onefile：不设 exclude_binaries、不建 COLLECT，所有依赖塞进同一个 exe
 exe = EXE(
     pyz,
     a.scripts,
-    [],
-    exclude_binaries=True,
-    name="XiaoWanToolbox",
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=DEBUG_CONSOLE,              # 默认无控制台（不弹黑色命令行窗口）；诊断模式开启
-    debug=DEBUG_CONSOLE,                # 诊断模式：bootloader 调试日志打到控制台
-    disable_windowed_traceback=False,
-    icon=str(ico) if ico.is_file() else None,
-)
-
-coll = COLLECT(
-    exe,
     a.binaries,
     a.datas,
-    strip=False,
-    upx=False,
+    [],
     name="XiaoWanToolbox",
+    debug=DEBUG_CONSOLE,                # 诊断模式：bootloader 调试日志打到控制台
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,                          # upx 压 Qt 的 DLL 容易出问题，关掉
+    runtime_tmpdir=None,
+    console=DEBUG_CONSOLE,              # 默认无控制台（不弹黑色命令行窗口）；诊断模式开启
+    disable_windowed_traceback=False,
+    icon=str(ico) if ico.is_file() else None,
 )

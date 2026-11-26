@@ -11,8 +11,31 @@ from PySide6.QtWidgets import (QAbstractSlider, QAbstractSpinBox, QApplication,
 
 from . import __version__
 from .context import AppContext
+from .core.utils import resource_path
 from .ui.main_window import MainWindow
 from .ui.style import apply_theme
+
+
+class SpinPadFilter(QObject):
+    """给数值框内部文本框补内边距。
+
+    QSS 的 padding 不会作用到 QSpinBox / QDoubleSpinBox 内部的 QLineEdit，
+    文字会紧贴边框。实测：文字起点只有 2px；给 QSS 加 padding-left: 10px
+    也只到 3px（几乎无效）；改设内部 lineEdit 的 textMargins 才真的有效（→13px）。
+
+    在控件第一次 Show 时补，所以不受「主题先于窗口应用」的顺序影响。
+    """
+
+    LEFT, RIGHT = 8, 4
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        from PySide6.QtCore import QEvent
+
+        if event.type() == QEvent.Type.Show and isinstance(obj, QAbstractSpinBox):
+            line_edit = obj.lineEdit()
+            if line_edit is not None and line_edit.textMargins().left() != self.LEFT:
+                line_edit.setTextMargins(self.LEFT, 0, self.RIGHT, 0)
+        return False
 
 
 class WheelGuard(QObject):
@@ -45,17 +68,6 @@ class WheelGuard(QObject):
         return False
 
 
-def resource_path(*parts: str):
-    from pathlib import Path
-
-    base = getattr(sys, "_MEIPASS", None)
-    if base:
-        candidate = Path(base).joinpath("app", "resources", *parts)
-        if candidate.exists():
-            return candidate
-    return Path(__file__).resolve().parent / "resources" / Path(*parts)
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
 
@@ -70,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
     guard = WheelGuard()
     app.installEventFilter(guard)
     app._wheel_guard = guard  # 持有引用，防止被垃圾回收
+
+    spin_pad = SpinPadFilter()
+    app.installEventFilter(spin_pad)
+    app._spin_pad = spin_pad
 
     icon_path = resource_path("icon.png")
     if icon_path.exists():

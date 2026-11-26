@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView,
-                               QPlainTextEdit, QPushButton, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog,
+                               QHBoxLayout, QHeaderView, QPlainTextEdit,
+                               QPushButton, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from ...core.task import TaskStatus
-from ...core.utils import human_duration, human_size, open_in_file_manager
+from ...core.utils import (human_duration, human_size, open_in_file_manager,
+                           power_off, should_power_off)
 from ..style import palette
 from ..widgets import Card, ProgressDelegate, StatCard, label
 from .shared import Page
@@ -23,7 +25,7 @@ COL_PROGRESS = 2
 class QueuePage(Page):
     def __init__(self, ctx, parent=None):
         super().__init__(ctx, "任务队列",
-                         "所有任务都排在这里。并发数可以在「设置」里调整。")
+                         "所有任务都排在这里。并发数可以在「功能设置」里调整。")
         self.queue = ctx.queue
         self._rows: dict[str, int] = {}
         self._last_logged: dict[str, int] = {}
@@ -87,10 +89,27 @@ class QueuePage(Page):
         self.btn_clearall.clicked.connect(self.queue.clear_all)
         self.btn_open.clicked.connect(self._on_open_output)
 
+        # 完成后关机：**一次性**开关（不是持久设置）。勾上只对本次队列生效，
+        # 队列跑完 / 被取消后自动复位 —— 免得下次莫名其妙被关机。
+        #
+        # 🔴 用 QCheckBox 而不是可勾选的 QPushButton：后者看着就是个按钮，
+        # 用户会以为「点一下 = 现在就关机」。勾选框才是"这是个开关"的视觉语言，
+        # 而且本软件其他开关（覆盖文件、后台运行、防削波…）全是 QCheckBox。
+        self.chk_poweroff = QCheckBox("全部完成后关机")
+        self.chk_poweroff.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chk_poweroff.setToolTip(
+            "勾上后，**本次队列全部成功完成**时会先弹 60 秒倒计时再关机。\n"
+            "以下情况不关机：有任务失败、有任务被取消、队列为空。\n"
+            "（关机不可逆，所以默认从严处理。）")
+        self.chk_poweroff.toggled.connect(self._on_poweroff_toggled)
+        self._poweroff_armed = False
+
         for b in (self.btn_start, self.btn_pause, self.btn_cancel, self.btn_retry,
                   self.btn_clear, self.btn_clearall):
             bl.addWidget(b)
         bl.addStretch(1)
+        bl.addWidget(self.chk_poweroff)
+        bl.addSpacing(8)
         bl.addWidget(self.btn_open)
         self.root.addWidget(bar)
 
@@ -112,6 +131,46 @@ class QueuePage(Page):
         self._sync_buttons()
 
     # ------------------------------------------------------------------ #
+    def _on_poweroff_toggled(self, checked: bool) -> None:
+        """「完成后关机」只对本次队列生效，且必须有任务才允许勾。
+
+        勾上时若队列已经是空的，直接取消并说明 —— 否则用户勾完发现
+        没反应（因为队列已经跑完了，queueEmpty 不会再发一次）。
+        """
+        self._poweroff_armed = checked
+        if not checked:
+            self.log.appendPlainText("─── 已取消「完成后关机」───")
+            return
+        if not self.queue.tasks:
+            self.chk_poweroff.setChecked(False)
+            self.log.appendPlainText("─── 队列是空的，「完成后关机」没有意义 ───")
+            return
+        self.log.appendPlainText(
+            "─── 已启用「完成后关机」：本次队列全部成功后弹 60 秒倒计时 ───")
+
+    def _maybe_power_off(self) -> None:
+        """队列跑空时调用：过三重闸门，通过了才弹倒计时。"""
+        if not self._poweroff_armed:
+            return
+        # 一次性：不管结果如何，这次触发后就复位，避免下次被误关
+        self.chk_poweroff.setChecked(False)
+
+        tasks = self.queue.tasks
+        ok, reason = should_power_off(tasks)
+        if not ok:
+            self.log.appendPlainText(f"─── 不关机：{reason} ───")
+            return
+
+        self.log.appendPlainText(f"─── {reason}，{PowerOffDialog.SECONDS} 秒后关机 ───")
+        dlg = PowerOffDialog(reason, self.window())
+        dlg.start()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            self.log.appendPlainText("─── 已取消关机 ───")
+            return
+        done, msg = power_off(0)
+        self.log.appendPlainText(
+            f"─── 关机命令{('已下达' if done else '失败：')}{'' if done else msg} ───")
+
     def _on_added(self, task_id: str) -> None:
         task = self.queue.get(task_id)
         if not task:
@@ -221,6 +280,7 @@ class QueuePage(Page):
 
     def _on_empty(self) -> None:
         self.log.appendPlainText("─── 队列已全部处理完毕 ───")
+        self._maybe_power_off()
 
     # ------------------------------------------------------------------ #
     def _refresh_stats(self) -> None:
@@ -302,3 +362,71 @@ class QueuePage(Page):
         if task:
             target = task.dst if task.dst.exists() else task.src
             open_in_file_manager(Path(target))
+
+
+# --------------------------------------------------------------------------- #
+# 完成后关机
+# --------------------------------------------------------------------------- #
+
+class PowerOffDialog(QDialog):
+    """关机前的人机确认：60 秒倒计时，随时可取消。
+
+    为什么必须有这一道：关机不可逆。用户可能在任务还剩几秒时才离开，
+    回来只看到黑屏就不知道发生了什么。倒计时给了他"反悔"的机会。
+
+    🔴 不用系统自带的 `shutdown /t N` 做倒计时：那个窗口用户可能看不到
+    （被我们的主窗口挡住），而且取消要记命令行。应用内倒计时更可控。
+    """
+
+    SECONDS = 60
+
+    def __init__(self, reason: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("即将关机")
+        self.setMinimumWidth(380)
+        self._left = self.SECONDS
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 16)
+        lay.setSpacing(10)
+
+        head = label("全部任务已完成", "SectionTitle")
+        lay.addWidget(head)
+        lay.addWidget(label(reason, "Hint", wrap=True))
+
+        self.lbl_count = label("", "HintStrong")
+        lay.addWidget(self.lbl_count)
+        lay.addWidget(label(
+            "想继续用电脑就点下面的「取消关机」。倒计时结束后系统会"
+            "自然关机，所有程序会收到关闭通知（该保存的会提示保存）。",
+            "Hint", wrap=True))
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn_cancel = QPushButton("取消关机")
+        btn_cancel.setObjectName("Primary")
+        btn_cancel.clicked.connect(self.reject)
+        row.addWidget(btn_cancel)
+        lay.addLayout(row)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+        self._update_text()
+
+    def start(self) -> None:
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _tick(self) -> None:
+        self._left -= 1
+        self._update_text()
+        if self._left <= 0:
+            self._timer.stop()
+            self.accept()
+
+    def _update_text(self) -> None:
+        self.lbl_count.setText(f"{self._left} 秒后关机…")
+

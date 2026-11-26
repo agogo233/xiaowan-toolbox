@@ -14,14 +14,14 @@ from .ffmpeg import MediaInfo
 
 class TaskKind(str, Enum):
     COMPRESS = "compress"
-    AUDIO = "audio"
+    AUDIO = "audio"          # 兼容旧数据：仍然表示"抽音频/转音频"
     REMUX = "remux"
     DOWNMIX = "downmix"
 
 
 KIND_LABEL = {
     TaskKind.COMPRESS: "视频压缩",
-    TaskKind.AUDIO: "音频提取",
+    TaskKind.AUDIO: "抽取拆分",
     TaskKind.REMUX: "封装混流",
     TaskKind.DOWNMIX: "声道下混",
 }
@@ -72,6 +72,41 @@ class Task:
     log: list[str] = field(default_factory=list)
     process: object | None = None    # subprocess.Popen
     cancel_requested: bool = False
+
+    # ---- 严格目标体积（仅「按文件大小压缩」页面使用） ----
+    # 其它页面的任务不设这些字段，默认值即可，行为完全不受影响。
+    size_policy: str = ""            # "" = 不校验；"strict" / "fast" = 目标体积两档
+    size_target_bytes: int = 0       # 目标体积（字节）
+    size_tolerance: float = 0.02     # 允许超出比例（判定用；目标体积两档都是 0）
+    size_max_rounds: int = 2         # 最多修正轮数
+    correction_round: int = 0        # 已修正次数
+    video_kbps_used: int = 0         # 当前轮使用的视频码率，供外推
+    qp_used: int = -1                # 硬件编码 CQP 模式当前使用的 QP（-1 = 非 CQP）
+    expected_bytes: int = 0          # 开跑前的估算体积（UI 显示）
+    audio_shrink: bool = False       # 是否允许自动降音频
+    audio_mode: str = "auto"         # copy / aac / none / auto
+    fill_target: bool = False        # 欠标时补跑把目标用满（用户勾选）
+    budget: object | None = None     # SizeBudget，避免循环导入用 object
+    encoding_settings: object | None = None   # VideoSettings，修正时要用
+
+    # ---- 试压（只压一段看效果，产物不进正常流程） ----
+    # (起始秒, 时长)。设了它，所有修正重跑也必须带上，否则"试压"会在
+    # 第一轮超标后突然全片重编 —— 那正是最贵的一步。
+    clip: tuple[float, float] | None = None
+    is_sample: bool = False          # UI 用它标出"这是试压产物"
+
+    # ---- 编码线程上限 ----
+    # 目前恒为 None（交给 ffmpeg 自动）。保留字段是为了"以后真要限线程"时
+    # 修正重跑也能带上，不用再改一遍调用链。见 commands._threads_for_one_job。
+    threads: int | None = None
+
+    # ---- 封面（封装混流用） ----
+    #: 这个任务实际会嵌入的封面图；None = 不加。队列页显示"封面来源"靠它，
+    #: 而不是在 UI 里再算一遍 —— 算两遍必然出现"界面说加了、实际没加"。
+    cover: Path | None = None
+
+    #: 另外引进来的一段音频（封装混流用）；None = 没有
+    extra_audio: Path | None = None
 
     # ------------------------------------------------------------------ #
     @property

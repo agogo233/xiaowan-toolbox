@@ -32,8 +32,67 @@ class CommandStep:
         return " ".join(self.args)
 
 
+def _threads_for_one_job(_concurrency: int = 1) -> int | None:
+    """单个任务该用几个编码线程 —— 答案：**不限制，交给 ffmpeg 自己**。
+
+    🔴 这函数曾经返回 `核数 // 并发数`（"别让两个 ffmpeg 各抢满全部核心"），
+    2026-11-16 实测推翻了那个判断，参数保留只为兼容调用方，永远返回 None。
+
+    为什么"按并发分线程"是错的（实测，32 核 / 1080p/20s / x264 medium）：
+
+        并发 2：各不限 4.3s / CPU 均 93%
+                各 16   5.3s / CPU 均 73%   ← **慢 23%**
+        并发 4：各不限 8.4s / 各 8 10.2s   ← 慢 22%
+        并发 8：各不限 16.6s / 各 4 17.9s  ← 慢 8%
+        并发 1：各不限 1.4s / 各 32 1.5s   ← 慢 7%
+
+    **每一档都更慢**，而且 CPU 占用并没降多少（93%→73%）。根因：
+    操作系统调度器本来就擅长处理线程"超额订阅"，而人为砍线程会让每个
+    ffmpeg 的并行流水线变浅 —— 读、解码、滤镜、编码、写盘这些阶段
+    需要足够多的线程才能填满，线程一少就出现流水线气泡。
+
+    当初的判断错在**测量设计**：只测了单任务（那里 1.4s vs 1.5s 看着
+    "差不多"），没测真正的并发场景。
+
+    结论：线程数、并发数、进程优先级**三者正交**，不该互相耦联 ——
+      · 线程数：ffmpeg 自动（它比我们更懂自己的流水线）
+      · 并发数：用户设（实测并发 2 相对串行 1.15× 加速，是真实收益）
+      · 优先级：用户的"后台运行"开关（不影响吞吐）
+    """
+    return None
+
+
 def _base(env: FFmpegEnv) -> list[str]:
+    """ffmpeg 前缀参数（`-i` 之前那一段）。"""
     return [env.ffmpeg or "ffmpeg", "-hide_banner", "-nostdin", "-y"]
+
+
+def _thread_args(threads: int | None,
+                 codec: str | None = None) -> list[str]:
+    """限制**编码**线程数的参数 —— 必须放在 `-i` 之后。
+
+    🔴 放 `-i` 之前完全无效（实测）：那时它是"解码线程数"，x264 的编码
+    线程数仍由它自己按核数决定。同一份素材、同样的值：
+      · `-threads 16` 放 -i 前：1.6s / CPU 峰 99%（和什么都不加一样）
+      · `-threads 16` 放 -i 后：2.2s / CPU 峰 52%（真的降下来了）
+      · `-threads 2`  放 -i 后：7.0s / CPU 峰 37%（慢得多，但确实省）
+
+    ⚠️ 对某些编码器**静默无效**，传之前要看 codec：
+      · **SVT-AV1**：`-threads` 完全不生效。实测 不限/2/16 三种取值下
+        `Level of Parallelism` 都是 6（它按分辨率自己算，1080p→6），
+        preset 也改不了。它有自己的并行模型。
+      · **NVENC / QSV / AMF 等硬件编码**：计算在 GPU 上，CPU 侧几乎不并行
+        （实测 NVENC 并发 2 只占 42% CPU，限不限线程耗时完全一样 1.4s/1.4s）。
+      这两种情况下加了也是空操作，不如不加 —— 免得用户/日志以为生效了。
+    """
+    if not threads or threads <= 0:
+        return []
+    if codec:
+        low = codec.lower()
+        if low == "libsvtav1" or any(
+                k in low for k in ("nvenc", "qsv", "amf", "videotoolbox", "vaapi")):
+            return []
+    return ["-threads", str(threads)]
 
 
 def _tail() -> list[str]:
@@ -81,6 +140,16 @@ _AMF_QUALITY = {
 }
 
 
+def _fdk_he_args(audio_codec: str, bitrate_kbps: int) -> list[str]:
+    """libfdk_aac 低码率时切 HE-AAC（≤64k 音质显著优于 LC）。
+
+    其余编码器或高码率返回空。
+    """
+    if audio_codec == "libfdk_aac" and bitrate_kbps <= 64:
+        return ["-profile:a", "aac_he"]
+    return []
+
+
 def _quality_args(codec: str, crf: float) -> list[str]:
     """把统一的『质量值』翻译成该编码器真正的恒定质量参数。
 
@@ -107,8 +176,67 @@ def _quality_args(codec: str, crf: float) -> list[str]:
     return ["-crf", f"{crf:g}"]
 
 
+_SVTAV1_PRESET = {
+    # SVT-AV1 的 preset 只接受 -1~13 的数字；数字越大越快、画质越差。
+    # x264 档位 → SVT 数字：keep it simple，两端对齐（ultrafast=13, veryslow=2）
+    "ultrafast": "13", "superfast": "11", "veryfast": "9", "faster": "8",
+    "fast": "7", "medium": "6", "slow": "5", "slower": "4", "veryslow": "2",
+}
+
+
+# 能用「固定 QP」精确控体积的编码器。
+#
+# 为什么需要：目标体积模式靠两遍 ABR（passlog 统计）算体积，而**硬件编码器
+# 不产生 passlog**（实测 h264_amf / h264_nvenc 的 pass 1 退出码 0、日志 0 字节），
+# 于是"两遍"是假的，体积实测超 1.2~2.4 倍。这类编码器只有走 CQP 才能控体积。
+#
+# 为什么只收这几个：QSV 没有纯 CQP（只有 min/max_qp 配合 global_quality），
+# VideoToolbox 只有 -q:v 的 qscale（与 QP 不是同一刻度）。它们不在名单里，
+# 目标体积页会直接拒绝（见 size_service.build_size_task）。
+# av1_nvenc 已实测支持 constqp 与 10bit（RTX 5060 Ti / 驱动 581.29）。
+# av1_amf 的 rc 选项里同样有 cqp（写法与 h264_amf / hevc_amf 一致）。
+CQP_ENCODERS = {"h264_amf", "hevc_amf", "h264_nvenc", "hevc_nvenc",
+                "av1_nvenc", "av1_amf"}
+
+#: QP 量程上限。AV1 的量化刻度与 H.264 完全不同 ——
+#: 实测 1708x1212 真实素材、目标 1MB，av1_nvenc 的 QP 51 仍产出 3.8 倍体积。
+#: 🔴 av1_amf 量程也是 0~255（`ffmpeg -h encoder=av1_amf` 写明
+#: 「from -1 to 255」），套 H.264 的 51 会让修正循环撞墙。
+_QP_MAX_DEFAULT = 51
+_QP_MAX_BY_CODEC = {"av1_nvenc": 255, "av1_amf": 255}
+
+
+def qp_max(codec: str) -> int:
+    """该编码器的 QP 上限；未知编码器按 H.264 的 51 处理。"""
+    return _QP_MAX_BY_CODEC.get(codec, _QP_MAX_DEFAULT)
+
+
+def can_cqp(codec: str) -> bool:
+    return codec in CQP_ENCODERS
+
+
+def cqp_args(codec: str, qp: int) -> list[str]:
+    """固定 QP 参数。各家的写法与量程完全不同（实测）：
+
+    AMF      : -rc cqp -qp_i N -qp_p N          （H.264/HEVC 0~51，AV1 0~255）
+    NVENC    : -rc constqp -qp N                （H.264/HEVC 0~51）
+    AV1 NVENC: -rc constqp -qp N                （**0~255**！QP 51 在 1708x1212
+               的真实素材上仍产出 3.8 倍于目标的体积 —— AV1 的量化刻度
+               比 H.264 平得多，上限钳到 51 会直接让修正循环撞墙）
+    AV1 AMF  : -rc cqp -qp_i N -qp_p N          （**0~255**，与 NVENC 同量程）
+    """
+    q = int(round(min(max(qp, 0), qp_max(codec))))
+    if codec.endswith("_amf"):
+        return ["-rc", "cqp", "-qp_i", str(q), "-qp_p", str(q)]
+    if codec.endswith("_nvenc"):
+        return ["-rc", "constqp", "-qp", str(q)]
+    raise ValueError(f"{codec} 不支持固定 QP 模式")
+
+
 def _speed_args(codec: str, preset: str) -> list[str]:
     """把统一的『速度档』翻译成该编码器支持的写法。"""
+    if codec == "libsvtav1":
+        return ["-preset", _SVTAV1_PRESET.get(preset, "6")]
     if codec.endswith("_videotoolbox"):
         # VideoToolbox 只有「是否画质优先」这一个开关
         return ["-allow_sw", "1", "-prio_speed", "0"] if preset in (
@@ -125,11 +253,73 @@ def _speed_args(codec: str, preset: str) -> list[str]:
 _HEVC_ENCODERS = {"libx265", "hevc_nvenc", "hevc_qsv", "hevc_amf",
                   "hevc_videotoolbox", "hevc_vaapi", HW_H265}
 
+# HEVC 要写 `hvc1` 而不是默认的 `hev1` 的容器：Safari / AVFoundation 和
+# MSE（浏览器 <source> 走的那条路）都只认 hvc1。实测 ffmpeg 对 MP4 和 MOV
+# 都默认写 hev1 —— 原来只给 MP4 加，选 MOV 就会得到 Mac 打不开的文件。
+_HEVC_TAG_CONTAINERS = {Container.MP4, Container.MOV}
+
 
 def _is_hw_like(codec: str) -> bool:
     """是否（可能是）硬件编码器 —— 体积估算时用，拿不到 env 也能判断。"""
     return codec in (HW_H264, HW_H265) or any(
         k in codec for k in ("nvenc", "qsv", "amf", "videotoolbox", "vaapi"))
+
+
+# 试压（只压一段看效果）的时长。
+# 20 秒是**默认值**，不是固定值 —— 用户可改（见 SAMPLE_SECONDS_OPTIONS）：
+#   · 5 秒：只想快速确认"参数没搞错"，最省时间
+#   · 20 秒：默认。够长到能反映全片难度，也够短到不用等
+#   · 60 秒：要更准的体积结论（两遍 ABR 的分析窗口越短越不准）
+SAMPLE_SECONDS = 20
+#: 下拉里可选的时长。别超过 60：再长就不叫"快速试"了。
+SAMPLE_SECONDS_OPTIONS = [5, 10, 20, 30, 60]
+
+
+def sample_span(info: MediaInfo | None, seconds: int = SAMPLE_SECONDS,
+                position: str = "middle") -> tuple[float, float]:
+    """试压要截取的那一段：(起始秒, 时长)。返回 (0, 0) 表示不截取。
+
+    🔴 时长会自动收敛到源的实际长度：8 秒的视频传 20 也只能取 8 秒。
+    这也是按钮文案必须动态显示"实际会取多长"的原因 —— 写死"20 秒"
+    在短片上是撒谎（用户报的就是这个问题）。
+
+    默认取**中间**而不是片头：片头往往是黑场/标题/静止画面，压出来又小又好看，
+    完全不能代表全片难度。中间段通常是正片，试压结论才可信。
+    （参考软件提供 首先/中间/最后 三选；这里固定中间 —— 另两个选项对"试压"
+    这个用途没有意义，只是给"我只想要那一段"的剪辑场景用的，而本功能不做那件事。）
+    """
+    if info is None or not info.duration or info.duration <= 0:
+        return 0.0, 0.0
+    dur = min(float(seconds), float(info.duration))
+    if dur <= 0:
+        return 0.0, 0.0
+    if position == "first":
+        return 0.0, dur
+    if position == "last":
+        return max(0.0, info.duration - dur), dur
+    return max(0.0, (info.duration - dur) / 2.0), dur
+
+
+def truncated_info(info: MediaInfo | None, seconds: int = SAMPLE_SECONDS,
+                   position: str = "middle") -> MediaInfo | None:
+    """返回一个「时长被截断」的 MediaInfo 副本，供试压时算预算/进度。
+
+    🔴 为什么必须截断：下游有两处按 duration 算东西 ——
+      1. 目标体积模式按 duration 反推码率（`compute_video_bitrate_kbps`）。
+         若仍用完整时长，20 秒的样本会按「压完整片」的码率去压，
+         体积必然对不上，看不出真实效果。
+      2. 进度条与 ETA 用 `task.duration` 做分母。样本只有 20 秒，
+         分母若还是 900 秒，进度条永远走不到头。
+    截断后两处自动正确，不需要在别处加特例。
+    """
+    if info is None:
+        return None
+    _ss, dur = sample_span(info, seconds, position)
+    if dur <= 0:
+        return info
+    from dataclasses import replace
+
+    return replace(info, duration=dur)
 
 
 def build_compress_steps(
@@ -140,7 +330,20 @@ def build_compress_steps(
     info: MediaInfo | None = None,
     target_size_mb: float = 0.0,
     work_dir: Path | None = None,
+    clip: tuple[float, float] | None = None,
+    threads: int | None = None,
 ) -> list[CommandStep]:
+    """threads: 编码线程数上限（None = 交给 ffmpeg 自动）。
+    默认 None = 交给 ffmpeg 自动。**别按并发数手工均分** —— 实测那是
+    负优化（每档并发都更慢 8~23%），理由见 _threads_for_one_job()。
+
+    clip: (起始秒, 时长)。给试压用 —— 只编码这一小段，其余参数不变。
+
+    ⚠️ 截取放在 `-i` **之前**（输入侧 seek）。这样 ffmpeg 直接跳到关键帧，
+    不会先解码前面的内容再丢弃 —— 试压要的就是"快"。
+    输入侧 seek 的代价是起点可能落在关键帧上（略早几十毫秒），
+    对"看画质/估体积"没有影响。
+    """
     steps: list[CommandStep] = []
     duration = info.duration if info else 0.0
     codec = resolve_codec(s.codec, env)     # auto_hw → 本机真正可用的硬件编码器
@@ -179,8 +382,8 @@ def build_compress_steps(
 
         if s.pix_fmt:
             v_args += ["-pix_fmt", s.pix_fmt]
-        if codec in _HEVC_ENCODERS and s.container == Container.MP4:
-            v_args += ["-tag:v", "hvc1"]  # 否则 macOS 播放器不认
+        if codec in _HEVC_ENCODERS and s.container in _HEVC_TAG_CONTAINERS:
+            v_args += ["-tag:v", "hvc1"]  # 否则 macOS / Safari 不认
 
     # --- 缩放 / 帧率 ---
     filters: list[str] = []
@@ -188,7 +391,7 @@ def build_compress_steps(
     if sc:
         filters.append(sc)
     if s.fps:
-        filters.append(f"fps={s.fps:g}")
+        filters.append(f"fps={s.fps}")   # s.fps 已是 ffmpeg 可用的字符串
 
     # --- 音频 ---
     a_args: list[str] = []
@@ -197,7 +400,8 @@ def build_compress_steps(
     elif s.audio_codec == "copy":
         a_args += ["-c:a", "copy"]
     else:
-        a_args += ["-c:a", s.audio_codec, "-b:a", f"{s.audio_bitrate_kbps}k"]
+        a_args += (["-c:a", s.audio_codec, "-b:a", f"{s.audio_bitrate_kbps}k"]
+                   + _fdk_he_args(s.audio_codec, s.audio_bitrate_kbps))
         if s.audio_channels:
             a_args += ["-ac", str(s.audio_channels)]
 
@@ -209,12 +413,27 @@ def build_compress_steps(
         a_args = (["-an"] if s.audio_codec == "none"
                   else ["-c:a", "libopus", "-b:a", f"{s.audio_bitrate_kbps}k"])
     elif s.container == Container.MP4 and s.faststart:
-        m_args += ["-movflags", "+faststart"]
+        flags = "+faststart"
+        # use_metadata_tags：把拍摄日期/设备/GPS 写进 MP4 的 iTunes 风格 tag。
+        # 光 -map_metadata 0 只映射 QuickTime 原生键，iPhone 的 creation_date/GPS
+        # 走的是 iTunes atom，不写这个 flag 会让相册 App 认不出拍摄时间。
+        if s.keep_metadata:
+            flags += "+use_metadata_tags"
+        m_args += ["-movflags", flags]
 
     maps = ["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0"]
 
     def _out_args(extra: list[str]) -> list[str]:
-        args = _base(env) + ["-i", str(src)]
+        args = _base(env)
+        clip_ss, clip_dur = clip if clip else (0.0, 0.0)
+        if clip_ss > 0:
+            # 输入侧 seek：不写 -accurate_seek，让 ffmpeg 直接跳关键帧（快）
+            args += ["-ss", f"{clip_ss:.3f}"]
+        args += ["-i", str(src)]
+        if clip_dur > 0:
+            args += ["-t", f"{clip_dur:.3f}"]
+        # 线程数必须在 -i 之后才作用于编码器（见 _thread_args）
+        args += _thread_args(threads, codec)
         args += maps
         args += v_args + a_args + m_args + s.extra_args
         if filters:
@@ -231,9 +450,11 @@ def build_compress_steps(
         wd.mkdir(parents=True, exist_ok=True)
         log = wd / f"{dst.stem}_pass"
         null_out = "NUL" if _is_windows() else "/dev/null"
-        p1 = _base(env) + ["-i", str(src)] + maps + v_args + [
-            "-pass", "1", "-passlogfile", str(log), "-an"
-        ]
+        # 🔴 第一遍带上音频（理由同 size_service：新版 ffmpeg 的 passlog
+        # 按输出流分文件，pass 2 会读音频流的日志，pass 1 -an 会导致缺文件）
+        p1 = (_base(env) + ["-i", str(src)] + _thread_args(threads, codec)
+              + maps + v_args
+              + ["-pass", "1", "-passlogfile", str(log)] + a_args)
         if filters:
             p1 += ["-vf", ",".join(filters)]
         p1 += ["-f", "null"] + _tail() + [null_out]
@@ -258,8 +479,92 @@ def _crf_to_qscale(crf: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# 音频提取
+# 抽取拆分（把画面 / 音轨 / 字幕分别拆成独立文件，一律 copy 不重编码）
 # --------------------------------------------------------------------------- #
+
+#: 音频编码 → 输出容器扩展名。
+#: 🔴 必须和源编码匹配：把 AAC 流硬叫 .mp3 会让播放器打不开 ——
+#: 因为我们是 `-c:a copy`，容器和编码对不上就是坏文件。
+#: 拿不准的一律落 .mka（Matroska 音频，什么都能装，实测可用）。
+_AUDIO_EXT_BY_CODEC = {
+    "aac": ".m4a", "alac": ".m4a", "mp3": ".mp3",
+    "ac3": ".ac3", "eac3": ".eac3", "dts": ".dts",
+    "flac": ".flac", "opus": ".opus", "vorbis": ".ogg", "truehd": ".thd",
+}
+
+#: 文本字幕编码 → 统一转成 .srt
+_TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text",
+                    "text", "microdvd", "jacosub", "sami", "realtext"}
+
+#: PGS 图形字幕。实测 `sup` muxer 只认 hdmv_pgs_subtitle，正好匹配。
+_PGS_CODECS = {"hdmv_pgs_subtitle"}
+
+
+def audio_ext_for(codec: str) -> str:
+    """音频编码 → 该用什么扩展名。未知编码走 .mka。"""
+    name = (codec or "").lower()
+    if name.startswith("pcm_"):
+        return ".wav"
+    return _AUDIO_EXT_BY_CODEC.get(name, ".mka")
+
+
+def subtitle_ext_for(codec: str) -> str:
+    """字幕编码 → 抽出后的扩展名。
+
+    文本 → .srt（统一格式，最通用）
+    PGS  → .sup（专用容器，实测 sup muxer 只认 hdmv_pgs_subtitle）
+    其它图形（DVD / DVB）→ .mkv（没有单独 muxer，Matroska 能装位图字幕）
+    """
+    name = (codec or "").lower()
+    if name in _PGS_CODECS:
+        return ".sup"
+    if name in _TEXT_SUB_CODECS:
+        return ".srt"
+    return ".mkv"
+
+
+def is_text_subtitle(codec: str) -> bool:
+    return (codec or "").lower() in _TEXT_SUB_CODECS
+
+
+def build_extract_steps(
+    env: FFmpegEnv,
+    src: Path,
+    dst: Path,
+    kind: str,                 # video / audio / subtitle
+    stream_index: int,         # 源里的**绝对**流序号（ffprobe 的 index）
+    codec: str = "",           # 源流编码名（决定扩展名/是否转容器）
+) -> list[CommandStep]:
+    """从源里抽出一条流存成单独文件。一律 copy，不重编码。
+
+    🔴 用**绝对流序号**而不是 `0:a:N` 这种同类序号：界面上勾的是
+    "第几条音轨"，实现时统一换算成 ffprobe 的 index —— 视频/音频/字幕
+    混在一起时两种写法容易对不上（`0:a:0` 和 `0:1` 可能是同一个流，
+    但源里有多个同类型流时就不是了）。
+    """
+    args = _base(env) + ["-i", str(src), "-map", f"0:{stream_index}"]
+
+    if kind == "video":
+        # 只要画面这一条：显式给 -an -sn，避免把其它流也带出来
+        args += ["-c:v", "copy", "-an", "-sn"]
+    elif kind == "audio":
+        args += ["-c:a", "copy", "-vn", "-sn"]
+    elif kind == "subtitle":
+        if is_text_subtitle(codec):
+            # 文本字幕统一转 srt（ass/ssa/vtt 都能转，srt 最通用）
+            args += ["-c:s", "srt"]
+        else:
+            # 图形字幕原样 copy —— 位图不能转文字
+            args += ["-c:s", "copy"]
+        args += ["-vn", "-an"]
+    else:
+        raise ValueError(f"build_extract_steps: 未知的 kind={kind!r}")
+
+    args += _tail() + [str(dst)]
+    label = {"video": "拆分画面", "audio": "拆分音轨",
+             "subtitle": "拆分字幕"}.get(kind, "拆分")
+    return [CommandStep(args, 1.0, label)]
+
 
 def build_extract_audio_steps(
     env: FFmpegEnv,
@@ -311,15 +616,54 @@ def build_remux_steps(
     audio_mode: str = "all",       # all / first / none
     audio_codec: str = "copy",
     audio_bitrate_kbps: int = 192,
+    audio_sample_rate: int = 0,     # 0 = 保持原始（仅重编码时生效）
+    audio_channels: int = 0,        # 0 = 保持原始（仅重编码时生效）
     subtitle_files: list[Path] | None = None,
     subtitle_langs: list[str] | None = None,
     faststart: bool = True,
     metadata: dict[str, str] | None = None,
+    cover: Path | None = None,
+    extra_audio: Path | None = None,
+    extra_audio_replace: bool = True,      # True=替换原声 / False=追加为第 2 条
+    extra_audio_fill: str = "loop",        # loop / once / trim
+    extra_audio_lang: str = "",
+    src_audio_count: int | None = None,
+    timeline_seconds: float = 0.0,
 ) -> list[CommandStep]:
+    """封装（不重编码）成另一个容器。
+
+    `extra_audio`：另外引进来的一段音频（MP3/AAC/WAV/M4A…）。
+    时长与视频不一致时由 `extra_audio_fill` 决定怎么对齐（全部实测过）：
+      loop  音频短 → `-stream_loop -1` 循环铺满，`-shortest` 收尾
+      once  音频短 → `-af apad` 补静音（播放一次后静音）
+      trim  音频长 → 超出的部分被 `-shortest` 截掉
+
+    🔴 输入序号：额外音频**排在封面之后**，已有的 `cover_idx` 计算完全不动。
+    若插在封面之前，封面会映射到音频那一路。
+    """
     args = _base(env) + ["-i", str(src)]
     sub_files = subtitle_files or []
     for sub in sub_files:
         args += ["-i", str(sub)]
+
+    # 封面的输入序号 = 1 + 字幕个数（字幕先加、封面后加）
+    cover_idx = 1 + len(sub_files)
+    use_attach = container == Container.MKV and cover is not None
+    if cover is not None and not use_attach:
+        args += ["-i", str(cover)]
+
+    # 🔴 额外音频排在**所有已有 -i 之后**，序号才不会打乱 cover_idx。
+    # `-stream_loop` 必须紧贴它要作用的那个 `-i`。
+    audio_idx = cover_idx + (1 if (cover is not None and not use_attach) else 0)
+    if extra_audio is not None and extra_audio_fill == "loop":
+        # 🔴 循环必须有收尾，否则 ffmpeg 会一直写，直到磁盘满
+        # （实测一次测试写了 781 MB）。没拿到时长时宁可不循环 ——
+        # 那种情况下"音频短了后半段没声音"是可接受的降级，
+        # 而"无限写盘"是不可接受的。
+        if timeline_seconds and timeline_seconds > 0:
+            args += ["-stream_loop", "-1"]
+    if extra_audio is not None:
+        args += ["-i", str(extra_audio)]
 
     args += ["-map", "0:v:0"]
     if audio_mode == "all":
@@ -330,16 +674,119 @@ def build_remux_steps(
     if container == Container.MKV:
         args += ["-map", "0:s?", "-map", "0:t?", "-map", "0:d?"]
 
-    map_start = 1
+    # 🔴 字幕从输入 #1 开始（源是 #0），封面排在其后 —— 不能把 cover_idx
+    # 当成字幕起点，否则有封面时字幕会映射到封面那一路，直接报错。
     for i, _sub in enumerate(sub_files):
-        args += ["-map", f"{map_start + i}:0"]
+        args += ["-map", f"{1 + i}:0"]
 
-    args += ["-c:v", "copy"]
+    # 🔴 必须写成 `-c:v:0 copy`（带流索引），不能用裸 `-c:v copy`：
+    # 后面还要给封面那一路 `-c:v:1 mjpeg`，两者同时出现时 ffmpeg 会警告
+    # 「Multiple -codec options specified for stream 2, only the last will be used」，
+    # 行为变成"以最后一条为准"，主视频到底有没有被 copy 就不可控了。
+    args += ["-c:v:0", "copy"]
+
+    # ---- 封面 ----
+    # MP4：作为一条 attached_pic 视频流写进去。ffmpeg 会自动额外生成
+    # MP4 的 `covr` 原子（实测：源文件 0 个 → 加 attached_pic 后 1 个，
+    # 格式码 0x0D = JPEG），而 **Windows 资源管理器读的正是 covr**。
+    # 所以这一步既管播放器海报，也管资源管理器缩略图，不需要另外写 box。
+    # 🔴 封面必须转成 mjpeg：直接 copy 任意格式（如 png）时 covr 的格式码
+    # 会跟着变，兼容性不如 JPEG。
+    # 🔴 MOV 存不下 attached_pic（实测：ffmpeg 日志显示写入了，但 muxer
+    # 不落盘，输出的流数仍是 2、covr 为 0；换 tag 也没用）——
+    # 所以 MOV 不支持封面，由上层拦截。
+    if cover is not None and not use_attach:
+        args += ["-map", f"{cover_idx}:v:0"]
+        args += ["-c:v:1", "mjpeg", "-disposition:v:1", "attached_pic"]
+        # attached_pic 流不该参与时长计算
+        args += ["-metadata:s:v:1", "title=Cover"]
+
+    # ---- 额外音频 ----
+    # 🔴 替换原声时上面 `-map 0:a?` 已经把源音轨加进来了，必须用
+    # `-map -0:a`（负号 = 取消映射）把它去掉 —— 否则输出会有两条音轨
+    # （一条原声 + 一条新音频），和"替换"的语义不符。
+    if extra_audio is not None:
+        if extra_audio_replace:
+            args += ["-map", "-0:a"]
+        args += ["-map", f"{audio_idx}:a:0"]
 
     if audio_codec == "copy" or audio_mode == "none":
         args += ["-c:a", "copy"] if audio_mode != "none" else ["-an"]
     else:
-        args += ["-c:a", audio_codec, "-b:a", f"{audio_bitrate_kbps}k"]
+        args += ["-c:a", audio_codec]
+        # 🔴 无损编码不接受 -b:a（给了会报错）。先判再拼，不要拼完再删。
+        if audio_codec not in ("flac", "pcm_s16le", "pcm_s24le") and audio_bitrate_kbps:
+            args += ["-b:a", f"{audio_bitrate_kbps}k"]
+        # 采样率/声道只在重编码时才有意义（copy 时 ffmpeg 会忽略，
+        # 但写进命令会让用户以为生效了 —— 所以上层也禁用了这两个下拉）
+        if audio_sample_rate:
+            args += ["-ar", str(audio_sample_rate)]
+        if audio_channels:
+            args += ["-ac", str(audio_channels)]
+
+    # 额外音频单独指定编码器与码率。
+    #
+    # 🔴 三个坑（都实测过）：
+    #  1. `-c:a:-1` 这种**负索引不被支持** —— ffmpeg 报
+    #     「Trailing garbage at the end of a stream specifier: -1」。
+    #     必须用具体的音轨序号。
+    #  2. 序号要按**输出里的音轨顺序**算，不是输入序号：
+    #     追加模式下额外音频排在源所有音轨之后；替换模式下它是第一条。
+    #  3. 不能只写 `-c:a copy` + `-c:a:N aac` —— ffmpeg 会警告
+    #     「Multiple -codec options specified for stream N」，行为变成
+    #     "以最后一条为准"。所以源音轨的编码也要按索引显式写。
+    #
+    # 额外音频一律转 AAC：源格式五花八门（mp3/flac/wav），直接 copy 到
+    # MP4 会失败，而 AAC 所有容器都认。
+    # 额外音频在**输出**里的音轨序号。后面指定编码器和滤镜都要用它，
+    # 所以在这里一次算好，两个块共用同一个值。
+    #   替换 → 第 0 条（源音轨已被 -map -0:a 去掉）
+    #   追加 → 排在源的所有音轨之后
+    new_idx = 0
+    if extra_audio is not None and audio_mode != "none":
+        if extra_audio_replace:
+            new_idx = 0
+        else:
+            if src_audio_count is None:
+                raise ValueError(
+                    "build_remux_steps: 追加音轨时必须提供 src_audio_count")
+            new_idx = src_audio_count
+        # 额外音频一律转 AAC：源格式五花八门（mp3/flac/wav），
+        # 直接 copy 到 MP4 会失败，而 AAC 所有容器都认。
+        args += [f"-c:a:{new_idx}", "aac", f"-b:a:{new_idx}",
+                 f"{audio_bitrate_kbps}k"]
+        if extra_audio_lang:
+            args += [f"-metadata:s:a:{new_idx}", f"language={extra_audio_lang}"]
+
+    # 时长对齐。
+    #
+    # 🔴 这里**不能用 `-shortest`**，三个坑叠加起来会直接毁掉输出：
+    #   · `-stream_loop -1`（循环铺满）需要某个东西来收尾，否则无限写盘
+    #     —— 实测忘加收尾会一直写到磁盘满（一次测试写了 781 MB）
+    #   · 但 `-shortest` 会把**封面那一路**（attached_pic，只有 1 帧 =
+    #     0.04 秒）当成最短的流，于是整个输出只有 0.02 秒、画面全丢
+    #   · 三者共存时实测：输出 0.02 秒 / 封面流 0 条 / covr 0 个
+    #
+    # 所以改成用 `-t <视频时长>` 显式指定输出长度。这个值调用方必须给
+    # （`timeline_seconds`，来自 info.duration）。
+    # 好处是三种 fill 模式统一收尾，不需要为每种模式单独拼参数。
+    #
+    # 🔴 没有时长就不能生成命令 —— `apad`（补静音）和 `-stream_loop -1`
+    # 都是"无限产出"，缺 `-t` 会一直写下去直到磁盘满。实测一次测试写了
+    # 781 MB 才被发现。宁可在这里**明确拒绝**，也不要交给 ffmpeg 去失控。
+    if extra_audio is not None and audio_mode != "none":
+        if not (timeline_seconds and timeline_seconds > 0):
+            raise ValueError(
+                "build_remux_steps: 有额外音频时必须提供 timeline_seconds"
+                "（源视频时长）—— 否则 apad / stream_loop 会无限写盘")
+        args += ["-t", f"{timeline_seconds:.3f}"]
+        if extra_audio_fill in ("once", "trim"):
+            # 🔴 必须用 `-filter:a:N`（按流索引），**不能**用全局 `-af`。
+            # `-af` 会作用到所有音频流，包括被 `-c:a copy` 保留下来的原声，
+            # 而 copy + 滤镜是互斥的 —— ffmpeg 直接报
+            # 「Filtergraph 'apad' was specified, but codec copy was selected」。
+            # 追加模式下原声是 copy、新音轨才需要 apad，所以只在它那一路加。
+            args += [f"-filter:a:{new_idx}", "apad"]
 
     if sub_files:
         sub_codec = "srt" if container in (Container.MKV, Container.WEBM) else "mov_text"
@@ -352,8 +799,21 @@ def build_remux_steps(
     for k, v in (metadata or {}).items():
         args += ["-metadata", f"{k}={v}"]
 
+    # MKV：没有 covr 槽位，只能挂成附件。播放器认，资源管理器不认 ——
+    # 这是容器限制，界面上要说清楚。
+    if use_attach:
+        args += ["-attach", str(cover), "-metadata:s:t:0",
+                 "mimetype=image/jpeg", "-metadata:s:t:0", "filename=cover.jpg"]
+
     if container == Container.MP4 and faststart:
-        args += ["-movflags", "+faststart"]
+        # 🔴 `+use_metadata_tags` 和封面**互斥**：它会把元数据改写成 mdta 原子，
+        # 连带把 attached_pic 流和 covr 封面原子一起丢掉 ——
+        # 实测同一命令：加 use_metadata_tags 时输出只有 2 条流、covr 0 个；
+        # 去掉它则 3 条流、covr 1 个。所以有封面时只给 +faststart。
+        flags = "+faststart"
+        if cover is None:
+            flags += "+use_metadata_tags"
+        args += ["-movflags", flags]
 
     args += _tail() + [str(dst)]
     return [CommandStep(args, 1.0, "封装中")]
@@ -826,7 +1286,7 @@ def build_downmix_steps(
 
     args += ["-map_metadata", "0"]
     if container == "mp4" and faststart:
-        args += ["-movflags", "+faststart"]
+        args += ["-movflags", "+faststart+use_metadata_tags"]
 
     args += _tail() + [str(dst)]
     label = "下混为立体声" if s.target_channels == 2 else "下混为单声道"

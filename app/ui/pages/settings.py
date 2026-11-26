@@ -5,21 +5,84 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QGridLayout,
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QGridLayout,
+                               QHBoxLayout, QHeaderView, QPushButton,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QHBoxLayout, QLineEdit, QPushButton, QSpinBox,
                                QWidget)
 
-from ...core.utils import (default_output_dir, ffmpeg_install_hint,
-                           is_macos, is_windows, open_in_file_manager)
-from ..widgets import Card, Pill, label
+from ...core.utils import (ffmpeg_install_hint, is_macos, is_windows,
+                           open_in_file_manager)
+from ..widgets import Card, Combo, Pill, label
 from .shared import Page
+
+
+
+# 硬件编码器的中文简称（弹窗表格用）
+HW_LABEL = {
+    "h264_nvenc": "H.264 · NVIDIA NVENC",
+    "hevc_nvenc": "H.265 · NVIDIA NVENC",
+    "h264_amf": "H.264 · AMD AMF",
+    "hevc_amf": "H.265 · AMD AMF",
+    "h264_videotoolbox": "H.264 · VideoToolbox",
+    "hevc_videotoolbox": "H.265 · VideoToolbox",
+}
+
+
+class EncoderDialog(QDialog):
+    """编码器支持清单弹窗：表格一目了然，硬件项带实测原因。"""
+
+    def __init__(self, rows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("编码器支持")
+        self.setMinimumSize(560, 420)
+
+        lay = QVBoxLayout(self)
+        note = label("软件编码只查 ffmpeg 是否编译；硬件编码在本机实测编码 3 帧，"
+                     "不可用的会给出原因。", "Hint", wrap=True)
+        lay.addWidget(note)
+
+        table = QTableWidget(len(rows), 4, self)
+        table.setHorizontalHeaderLabels(["类别", "编码器", "名称", "状态"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        table.setWordWrap(False)
+        table.setAlternatingRowColors(True)
+        for r, (cat, family, name, state) in enumerate(rows):
+            ok = state == "可用"
+            for c, text in enumerate((cat, family, name, state)):
+                item = QTableWidgetItem(text)
+                if c == 3:
+                    item.setForeground(QColor("#1FA34A" if ok else "#C77700"))
+                table.setItem(r, c, item)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        table.setShowGrid(False)
+        lay.addWidget(table, 1)
+
+        tip = label("硬件加速没列出来或显示不可用？升级显卡驱动通常能解决"
+                    "（NVIDIA 需要 610.00 或更新）。", "Hint", wrap=True)
+        lay.addWidget(tip)
+
+        btn = QPushButton("关闭")
+        btn.setObjectName("Primary")
+        btn.clicked.connect(self.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(btn)
+        lay.addLayout(row)
 
 
 class SettingsPage(Page):
     themeChanged = Signal(str)
 
     def __init__(self, ctx, parent=None):
-        super().__init__(ctx, "设置", "一般保持默认就能用。找不到 ffmpeg 时再来这里指定。")
+        super().__init__(ctx, "功能设置", "一般保持默认就能用。找不到 ffmpeg 时再来这里指定。")
         self.root.addWidget(self._build_env())
         self.root.addWidget(self._build_output())
         self.root.addWidget(self._build_prefs())
@@ -103,6 +166,7 @@ class SettingsPage(Page):
         card.add(label("输出", "SectionTitle"))
 
         self.ed_outdir = QLineEdit()
+        self.ed_outdir.setPlaceholderText("留空即「与源文件相同目录」")
         btn_dir = QPushButton("选择…")
         btn_dir.clicked.connect(self._pick_dir)
         btn_open = QPushButton("打开")
@@ -113,13 +177,16 @@ class SettingsPage(Page):
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(8)
-        rl.addWidget(label("默认输出目录"))
+        rl.addWidget(label("输出目录"))
         rl.addWidget(self.ed_outdir, 1)
         rl.addWidget(btn_dir)
         rl.addWidget(btn_open)
         card.add(row)
+        card.add(label("默认输出到源文件所在目录，这里不用填。"
+                       "只有把下面的「默认位置」改成「始终输出到指定目录」时，"
+                       "才会用到上面这个目录。", "Hint", wrap=True))
 
-        self.cmb_mode = QComboBox()
+        self.cmb_mode = Combo()
         self.cmb_mode.addItem("与源文件相同目录", "source")
         self.cmb_mode.addItem("始终输出到上面的目录", "custom")
 
@@ -153,9 +220,18 @@ class SettingsPage(Page):
         self.spin_workers.setRange(1, 8)
         self.spin_workers.setSuffix(" 个")
 
-        self.cmb_theme = QComboBox()
+        self.cmb_theme = Combo()
         self.cmb_theme.addItem("浅色", "light")
         self.cmb_theme.addItem("深色", "dark")
+
+        # 后台运行：降进程优先级，不是减线程 —— 两者目的相同（别卡我），
+        # 但减线程直接牺牲吞吐，降优先级只在别人抢 CPU 时让路，没人抢时全速。
+        self.chk_background = QCheckBox("后台运行（优先让出 CPU，压片不影响你用电脑）")
+        self.chk_background.setToolTip(
+            "把 ffmpeg 进程降到「低于正常」优先级。\n"
+            "别人（你、别的程序）需要 CPU 时系统会先把它挪开，\n"
+            "没人抢的时候它照样全速跑 —— 所以压缩速度基本不受影响。\n"
+            "笔记本上还能顺带减少发热和风扇噪音。")
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
@@ -169,8 +245,10 @@ class SettingsPage(Page):
         holder = QWidget()
         holder.setLayout(grid)
         card.add(holder)
-        card.add(label("x264 / x265 已自带多线程，一般设 1–2 就够；"
-                       "设太高反而会互相抢 CPU，总体更慢。", "Hint"))
+        card.add(label("x264 / x265 已自带多线程，一般设 1–2 就够。"
+                       "设更高只多一点点速度（实测 2 个并行相对串行 1.15×），"
+                       "但机器会更卡。", "Hint"))
+        card.add(self.chk_background)
         return card
 
     # ------------------------------------------------------------------ #
@@ -178,13 +256,14 @@ class SettingsPage(Page):
         cfg = self.ctx.config
         self.ed_ffmpeg.setText(cfg.ffmpeg_path)
         self.ed_ffprobe.setText(cfg.ffprobe_path)
-        self.ed_outdir.setText(cfg.output_dir or str(default_output_dir()))
+        self.ed_outdir.setText(cfg.output_dir)
         idx = self.cmb_mode.findData(cfg.output_mode)
         self.cmb_mode.setCurrentIndex(max(0, idx))
         self.ed_suffix.setText(cfg.filename_suffix)
         self.chk_overwrite.setChecked(cfg.overwrite)
         self.chk_after.setChecked(cfg.open_when_done)
         self.spin_workers.setValue(max(1, min(8, cfg.concurrency)))
+        self.chk_background.setChecked(cfg.background_mode)
         tidx = self.cmb_theme.findData(cfg.theme)
         self.cmb_theme.setCurrentIndex(max(0, tidx))
         self._detect(apply=False)
@@ -227,15 +306,28 @@ class SettingsPage(Page):
         if not env.ready:
             self.env_detail.setText("请先配置好 ffmpeg。")
             return
-        wanted = [("libx264", "H.264 软编"), ("libx265", "H.265 软编"),
-                  ("h264_videotoolbox", "H.264 硬编"), ("hevc_videotoolbox", "H.265 硬编"),
-                  ("libmp3lame", "MP3"), ("aac", "AAC"), ("libopus", "Opus"),
-                  ("flac", "FLAC"), ("libvpx-vp9", "VP9")]
-        lines = []
-        for name, label_cn in wanted:
+
+        rows: list[tuple[str, str, str, str]] = []
+        # (类别, 显示名, 编码器名, 状态/原因)
+        soft = [("H.264", "libx264"), ("H.265", "libx265"), ("AV1", "libsvtav1"),
+                ("VP9", "libvpx-vp9"), ("MP3", "libmp3lame"), ("AAC", "aac"),
+                ("Opus", "libopus"), ("FLAC", "flac"), ("AAC-FDK", "libfdk_aac")]
+        for family, name in soft:
             ok = env.encoder_available(name)
-            lines.append(f"{'✔' if ok else '✘'} {label_cn}（{name}）")
-        self.env_detail.setText(" ".join(lines))
+            rows.append(("软件编码", family, name,
+                         "可用" if ok else "当前 ffmpeg 未编译"))
+        # 硬件编码器要实测（编译了≠能用），并显示不可用的人话原因
+        for name in ("h264_nvenc", "hevc_nvenc", "h264_amf", "hevc_amf"):
+            if not env.encoder_available(name):
+                rows.append(("硬件编码", name, name, "当前 ffmpeg 未编译"))
+                continue
+            ok = env.encoder_usable(name)
+            reason = env.unusable_reason(name)
+            state = "可用" if ok else (reason or "不可用")
+            rows.append(("硬件编码", HW_LABEL.get(name, name), name, state))
+
+        dlg = EncoderDialog(rows, self)
+        dlg.exec()
 
     # ------------------------------------------------------------------ #
     def _save(self) -> None:
@@ -248,6 +340,7 @@ class SettingsPage(Page):
         cfg.overwrite = self.chk_overwrite.isChecked()
         cfg.open_when_done = self.chk_after.isChecked()
         cfg.concurrency = self.spin_workers.value()
+        cfg.background_mode = self.chk_background.isChecked()
         cfg.theme = self.cmb_theme.currentData() or "light"
 
         self.ctx.save_config()
@@ -261,11 +354,12 @@ class SettingsPage(Page):
         cfg.ffmpeg_path = ""
         cfg.ffprobe_path = ""
         cfg.output_mode = "source"
-        cfg.output_dir = str(default_output_dir())
+        cfg.output_dir = ""
         cfg.filename_suffix = ""
         cfg.overwrite = False
         cfg.open_when_done = False
         cfg.concurrency = 2
+        cfg.background_mode = False
         cfg.theme = "light"
         self.ctx.save_config()
         self._load()
