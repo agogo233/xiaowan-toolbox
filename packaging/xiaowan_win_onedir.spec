@@ -9,7 +9,10 @@
     pyinstaller packaging/xiaowan_win_onedir.spec --noconfirm
 
 产物：
-    dist/小丸工具箱/小丸工具箱.exe      双击即用，无需装 Python
+    dist/XiaoWanToolbox/XiaoWanToolbox.exe      双击即用，无需装 Python
+
+🔴 exe 与目录名必须用 ASCII：实测中文名 exe（小丸工具箱.exe）在部分中文 Windows
+上双击会原生崩溃（0xC0000409）；程序显示名仍由窗口标题保留中文。
 
 如果仓库根目录存在 bin/ffmpeg.exe 与 bin/ffprobe.exe，会被一并打进包里，
 实现"开箱即用、无需另外安装 ffmpeg"。
@@ -31,6 +34,11 @@ datas = [(str(ROOT / "app" / "resources" / "icon.png"), "app/resources"),
 # 会静默地把 ffmpeg 一起打进去 —— 用户以为拿到的是小包，其实是 460MB。
 import os
 _NO_FFMPEG = os.environ.get("XIAOWAN_NO_FFMPEG", "").strip() not in ("", "0", "false", "False")
+# 诊断模式：XIAOWAN_CONSOLE_DEBUG=1 时构建「带控制台 + bootloader 调试日志」的版本，
+# 用于排查"双击没反应"一类启动问题（CI 里的 windows-debug-console artifact）。
+# 该版本在 cmd 里运行会把 PyInstaller 每一步（找 Python DLL / 加载 PYZ / 初始化 /
+# import 脚本）的进度打到控制台，死在哪一步一目了然。
+DEBUG_CONSOLE = os.environ.get("XIAOWAN_CONSOLE_DEBUG") == "1"
 if not _NO_FFMPEG:
     if ffmpeg.is_file():
         datas.append((str(ffmpeg), "bin"))
@@ -74,12 +82,12 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="小丸工具箱",
-    debug=False,
+    name="XiaoWanToolbox",
+    debug=DEBUG_CONSOLE,                # 诊断模式：bootloader 调试日志打到控制台
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,                      # 关键：不弹黑色命令行窗口
+    console=DEBUG_CONSOLE,              # 默认无控制台（不弹黑色命令行窗口）；诊断模式开启
     disable_windowed_traceback=False,
     icon=str(ico) if ico.is_file() else None,
 )
@@ -90,5 +98,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="小丸工具箱",
+    name="XiaoWanToolbox",
 )

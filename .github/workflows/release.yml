@@ -107,13 +107,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Build portable exe
-        run: python packaging/build_windows.py
+        run: python packaging/build_windows.py --onedir
 
       - name: Build debug console exe (bootloader log)
         id: debugbuild
         run: |
           $env:XIAOWAN_CONSOLE_DEBUG = '1'
-          python -m PyInstaller packaging/xiaowan_win.spec --noconfirm --distpath dist_debug --workpath build_debug
+          python -m PyInstaller packaging/xiaowan_win_onedir.spec --noconfirm --distpath dist_debug --workpath build_debug
           $exe = 'dist_debug/XiaoWanToolbox/XiaoWanToolbox.exe'
           if (-not (Test-Path $exe)) { Write-Error 'debug 诊断版构建失败'; exit 1 }
           Write-Host "debug 诊断版已生成：$exe"
